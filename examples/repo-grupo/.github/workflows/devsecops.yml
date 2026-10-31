@@ -44,5 +44,5 @@ jobs:
       promote: true
       findings-bucket: ${{ vars.FINDINGS_BUCKET }}
       templates-ref: v1
-    # Necesario solo en modo usuario_iam: las llaves se leen de los environments protegidos
-    secrets: inherit
+    # Sin "secrets: inherit" (mínimo privilegio): en modo usuario_iam el pipeline lee las
+    # llaves directamente de los environments protegidos staging / aprobacion-release.
