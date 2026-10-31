@@ -1,4 +1,5 @@
-aws_region      = "us-east-2"
+aws_region         = "us-east-2"
+modo_autenticacion = "oidc"   # "usuario_iam" si la SCP de la cuenta bloquea OIDC
 github_org      = "NOMBRE-DE-LA-ORG"
 repos           = ["g01-sistema", "g02-sistema"]
 grupos          = ["g01", "g02"]

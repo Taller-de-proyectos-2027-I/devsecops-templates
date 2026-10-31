@@ -60,15 +60,30 @@ Lo mantiene el rol **DevSecOps**; cada grupo solo lo invoca desde su repositorio
    cp terraform.tfvars.example terraform.tfvars   # completar org, repos, grupos y correos
    terraform init && terraform apply
    ```
+   - Si `terraform apply` falla con `AccessDenied ... CreateOpenIDConnectProvider ... service control policy`, la cuenta pertenece a una organización que prohíbe OIDC (caso de las cuentas con créditos de bienvenida). Poner `modo_autenticacion = "usuario_iam"` en `terraform.tfvars` y repetir `terraform apply` (ver **Modo usuario_iam** abajo).
 4. Con los *outputs*, crear las **variables de organización** (Settings → Secrets and variables → Actions → Variables): `AWS_ROLE_ARN`, `TF_STATE_BUCKET` y `FINDINGS_BUCKET`. No son secretos, porque con OIDC no hay llaves que guardar.
 5. Si se creó un usuario con access keys para el bootstrap, eliminarlas.
+
+#### Modo `usuario_iam` (cuando la SCP de la cuenta bloquea OIDC)
+El bootstrap crea el usuario `devsecops-pipeline`, que **no tiene permisos propios**: solo puede asumir el rol `devsecops-github-actions`, el mismo que usaría OIDC, con sus permisos mínimos. Así, si las llaves se filtraran, solo servirían para asumir ese rol acotado.
+
+1. Crear las llaves **fuera de Terraform**, para que no queden en el estado:
+   ```bash
+   aws iam create-access-key --user-name devsecops-pipeline --profile <perfil>
+   ```
+2. En **cada repositorio de grupo**, crear `AWS_ACCESS_KEY_ID` y `AWS_SECRET_ACCESS_KEY` como **secrets de los environments** `staging` y `aprobacion-release`.
+   - **No** como secrets del repositorio ni de la organización, porque esos los puede leer el job de un PR.
+3. Rotar las llaves cada 90 días (`create-access-key` → actualizar secrets → `delete-access-key` de la anterior). Registrar la rotación en el log de cambios del framework.
+
+Es un **riesgo aceptado y documentado**: son llaves de larga duración, y se mitiga con privilegio mínimo, environments limitados a `main` y rotación.
 
 ### 3. Repositorio de cada grupo
 1. Crear `gXX-sistema` y copiar el contenido de `examples/repo-grupo/`.
 2. Ajustar `grupo`, `ecr-repository` e `infra/staging.tfvars`.
 3. En **Settings → Environments** crear:
-   - `staging`: sin revisores, despliegue permitido solo desde `main`;
-   - `aprobacion-release`: *required reviewers* = equipo `devsecops`.
+   - `staging`: sin revisores; en *Deployment branches and tags* elegir **Selected branches** → `main`;
+   - `aprobacion-release`: *required reviewers* = equipo `devsecops`, también limitado a `main`.
+   - En modo `usuario_iam`, agregar en **ambos** environments los secrets `AWS_ACCESS_KEY_ID` y `AWS_SECRET_ACCESS_KEY`.
 4. Crear la variable de repo `SPRINT_ACTUAL` (ej. `S1`). La actualiza el líder en cada sprint.
 5. Abrir un PR de prueba y revisar el resumen del gate en la pestaña *Actions*.
 
