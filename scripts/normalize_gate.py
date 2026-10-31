@@ -153,6 +153,13 @@ def leer_sarif(ruta: Path, herramienta: str, categoria: str, etapa: str, sev_def
 
             titulo = ((res.get("message") or {}).get("text")
                       or (regla.get("shortDescription") or {}).get("text") or rid)
+            if herramienta.startswith("trivy"):
+                # Trivy: "Package: X\nInstalled Version: Y\n...\nFixed Version: Z" -> una línea útil
+                campos = dict(l.split(":", 1) for l in titulo.splitlines() if ":" in l)
+                campos = {k.strip(): v.strip() for k, v in campos.items()}
+                if campos.get("Package"):
+                    titulo = (f"{campos['Package']} {campos.get('Installed Version', '')}".strip()
+                              + f" → corregido en: {campos.get('Fixed Version') or 'sin versión corregida'}")
             titulo = titulo.strip().splitlines()[0][:240]
 
             # Huella estable: en Trivy varios paquetes comparten CVE y ubicación (pom.xml),
