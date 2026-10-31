@@ -12,4 +12,12 @@
 #   justificacion: "No usamos RouterFunctions; se actualiza en el sprint 5"
 #   aprobado_por: "usuario-ciberseguridad"
 #   expira: 2026-11-30
-[]
+- regla: yaml.github-actions.security.secrets-inherit.secrets-inherit
+  herramienta: semgrep
+  archivo: .github/workflows/devsecops.yml
+  justificacion: >-
+    Necesario para que el pipeline reutilizable lea las llaves AWS de los environments
+    protegidos (modo usuario_iam). El workflow llamado es el pipeline propio de la
+    organización fijado en @v1 y las llaves solo existen en environments limitados a main.
+  aprobado_por: "devsecops"
+  expira: 2027-03-31

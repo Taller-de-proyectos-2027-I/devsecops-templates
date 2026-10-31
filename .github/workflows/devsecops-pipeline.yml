@@ -125,8 +125,8 @@ on:
     secrets:
       # Solo en modo usuario_iam (cuentas cuya SCP prohíbe OIDC). Se definen como secrets
       # de los ENVIRONMENTS "staging" y "aprobacion-release" (limitados a main), nunca del
-      # repositorio. El caller NO usa "secrets: inherit": los jobs con environment los leen
-      # directamente de ese environment.
+      # repositorio. El caller debe usar "secrets: inherit": sin eso GitHub no expone los
+      # secrets de environment a un workflow reutilizable.
       AWS_ACCESS_KEY_ID:
         required: false
       AWS_SECRET_ACCESS_KEY:
@@ -262,11 +262,29 @@ jobs:
     name: "SEC · Dependencias y SBOM (Trivy)"
     if: inputs.enable-trivy-fs
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       APP_DIR: ${{ inputs.app-dir }}
+      BUILD_TOOL: ${{ inputs.build-tool }}
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java-version }}
+          cache: ${{ inputs.build-tool }}
+      # Se escanea el artefacto construido (las librerías reales dentro del .jar) y no
+      # solo el pom.xml: la resolución del pom no siempre ve las versiones transitivas
+      # que fija el BOM de Spring Boot. Así el SCA del PR encuentra lo mismo que el
+      # escaneo de la imagen, antes del merge.
+      - name: Construir artefacto (sin pruebas)
+        working-directory: ${{ inputs.app-dir }}
+        run: |
+          if [ "$BUILD_TOOL" = "gradle" ]; then
+            chmod +x ./gradlew && ./gradlew --no-daemon assemble -x test
+          else
+            mvn -B -ntp -DskipTests package
+          fi
       - name: Escanear dependencias y generar SBOM (CycloneDX)
         run: |
           mkdir -p reports
@@ -274,8 +292,10 @@ jobs:
             docker run --rm -v "$PWD:/src" -w /src -v "$HOME/.cache/trivy:/root/.cache/trivy" \
               -e TRIVY_DB_REPOSITORY -e TRIVY_JAVA_DB_REPOSITORY "$TRIVY_IMAGE" "$@"
           }
-          trivy fs --scanners vuln --format sarif --output reports/trivy-fs.sarif "$APP_DIR"
-          trivy fs --skip-db-update --skip-java-db-update --format cyclonedx --output reports/sbom.cdx.json "$APP_DIR"
+          # rootfs analiza los .jar construidos (target/, build/libs/) con sus dependencias
+          trivy rootfs --scanners vuln --format sarif --output reports/trivy-fs.sarif "$APP_DIR"
+          trivy rootfs --skip-db-update --skip-java-db-update --format cyclonedx \
+            --output reports/sbom.cdx.json "$APP_DIR"
       - uses: actions/upload-artifact@v6
         if: always()
         with:
@@ -410,6 +430,15 @@ jobs:
           python3 .devsecops-templates/scripts/normalize_gate.py \
             --reports reports --scope image --fail-on "$FAIL_ON" --app-dir "$APP_DIR" \
             --out hallazgos-image.json --metrics-out metricas-image.json --enforce
+      - name: Modo de autenticación AWS
+        env:
+          TIENE_LLAVES: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
+        run: |
+          if [ "$TIENE_LLAVES" = "true" ]; then
+            echo "::notice::AWS: modo usuario_iam (llaves del environment protegido)"
+          else
+            echo "::notice::AWS: modo OIDC. Si la cuenta usa usuario_iam, faltan los secrets AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY en el ENVIRONMENT (no en los secrets del repositorio)"
+          fi
       - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ inputs.aws-role-arn }}
@@ -461,6 +490,15 @@ jobs:
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
           terraform_wrapper: false
+      - name: Modo de autenticación AWS
+        env:
+          TIENE_LLAVES: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
+        run: |
+          if [ "$TIENE_LLAVES" = "true" ]; then
+            echo "::notice::AWS: modo usuario_iam (llaves del environment protegido)"
+          else
+            echo "::notice::AWS: modo OIDC. Si la cuenta usa usuario_iam, faltan los secrets AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY en el ENVIRONMENT (no en los secrets del repositorio)"
+          fi
       - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ inputs.aws-role-arn }}
@@ -550,6 +588,15 @@ jobs:
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
           terraform_wrapper: false
+      - name: Modo de autenticación AWS
+        env:
+          TIENE_LLAVES: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
+        run: |
+          if [ "$TIENE_LLAVES" = "true" ]; then
+            echo "::notice::AWS: modo usuario_iam (llaves del environment protegido)"
+          else
+            echo "::notice::AWS: modo OIDC. Si la cuenta usa usuario_iam, faltan los secrets AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY en el ENVIRONMENT (no en los secrets del repositorio)"
+          fi
       - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ inputs.aws-role-arn }}
@@ -648,6 +695,15 @@ jobs:
         with:
           name: devsecops-reporte
           path: reporte
+      - name: Modo de autenticación AWS
+        env:
+          TIENE_LLAVES: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
+        run: |
+          if [ "$TIENE_LLAVES" = "true" ]; then
+            echo "::notice::AWS: modo usuario_iam (llaves del environment protegido)"
+          else
+            echo "::notice::AWS: modo OIDC. Si la cuenta usa usuario_iam, faltan los secrets AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY en el ENVIRONMENT (no en los secrets del repositorio)"
+          fi
       - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ inputs.aws-role-arn }}
@@ -676,6 +732,15 @@ jobs:
     env:
       ECR_REPOSITORY: ${{ inputs.ecr-repository }}
     steps:
+      - name: Modo de autenticación AWS
+        env:
+          TIENE_LLAVES: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
+        run: |
+          if [ "$TIENE_LLAVES" = "true" ]; then
+            echo "::notice::AWS: modo usuario_iam (llaves del environment protegido)"
+          else
+            echo "::notice::AWS: modo OIDC. Si la cuenta usa usuario_iam, faltan los secrets AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY en el ENVIRONMENT (no en los secrets del repositorio)"
+          fi
       - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ inputs.aws-role-arn }}
