@@ -159,7 +159,7 @@ jobs:
           docker run --rm -v "$PWD:/repo" "$GITLEAKS_IMAGE" \
             dir /repo --redact --exit-code 0 \
             --report-format sarif --report-path /repo/reports/gitleaks.sarif
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: reporte-gitleaks
@@ -214,7 +214,7 @@ jobs:
             -include .devsecops-templates/policies/spotbugs-security-include.xml \
             ${CP:+-auxclasspath "$CP"} \
             -sarif=reports/spotbugs.sarif "${CLASSES[@]}"
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: reporte-spotbugs
@@ -242,7 +242,7 @@ jobs:
           read -ra CONFIGS <<< "$SEMGREP_CONFIGS"
           for c in "${CONFIGS[@]}"; do ARGS+=(--config "$c"); done
           semgrep scan "${ARGS[@]}" --metrics=off --sarif --output reports/semgrep.sarif "$APP_DIR"
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: reporte-semgrep
@@ -267,7 +267,7 @@ jobs:
           }
           trivy fs --scanners vuln --format sarif --output reports/trivy-fs.sarif "$APP_DIR"
           trivy fs --skip-db-update --skip-java-db-update --format cyclonedx --output reports/sbom.cdx.json "$APP_DIR"
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: reporte-trivy-fs
@@ -308,7 +308,7 @@ jobs:
           else
             echo "::notice::Sin Dockerfile ($DOCKERFILE)"
           fi
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: reporte-checkov
@@ -338,7 +338,7 @@ jobs:
           repository: ${{ env.TEMPLATES_REPO }}
           ref: ${{ inputs.templates-ref }}
           path: .devsecops-templates
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v6
         with:
           pattern: reporte-*
           path: reports
@@ -388,7 +388,7 @@ jobs:
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:/src" -w /src \
             -e TRIVY_DB_REPOSITORY -e TRIVY_JAVA_DB_REPOSITORY "$TRIVY_IMAGE" \
             image --scanners vuln --format sarif --output reports/trivy-image.sarif app-local:"$GITHUB_SHA"
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: reporte-trivy-image
@@ -503,7 +503,7 @@ jobs:
           else
             echo "::notice::No se encontró especificación OpenAPI en $OPENAPI_PATH; se omite el API scan"
           fi
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: reporte-zap
@@ -576,7 +576,7 @@ jobs:
           repository: ${{ env.TEMPLATES_REPO }}
           ref: ${{ inputs.templates-ref }}
           path: .devsecops-templates
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v6
         with:
           pattern: reporte-*
           path: reports
@@ -599,7 +599,7 @@ jobs:
           set -e
           if [ $CODE -eq 0 ]; then echo "gate=aprobado" >> "$GITHUB_OUTPUT"; else echo "gate=bloqueado" >> "$GITHUB_OUTPUT"; fi
           exit $CODE
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: devsecops-reporte
