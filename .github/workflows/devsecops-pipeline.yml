@@ -122,6 +122,14 @@ on:
       gate-result:
         description: "aprobado | bloqueado"
         value: ${{ jobs.report.outputs.gate }}
+    secrets:
+      # Solo en modo usuario_iam (cuentas cuya SCP prohíbe OIDC). Deben definirse como
+      # secrets de los ENVIRONMENTS "staging" y "aprobacion-release" (limitados a main),
+      # nunca como secrets del repositorio, para que un PR no pueda leerlos.
+      AWS_ACCESS_KEY_ID:
+        required: false
+      AWS_SECRET_ACCESS_KEY:
+        required: false
 
 permissions:
   contents: read
@@ -359,6 +367,7 @@ jobs:
     if: inputs.deploy && needs.ci-gate.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    environment: staging
     permissions:
       contents: read
       id-token: write
@@ -400,10 +409,13 @@ jobs:
           python3 .devsecops-templates/scripts/normalize_gate.py \
             --reports reports --scope image --fail-on "$FAIL_ON" --app-dir "$APP_DIR" \
             --out hallazgos-image.json --metrics-out metricas-image.json --enforce
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ inputs.aws-role-arn }}
           aws-region: ${{ inputs.aws-region }}
+          # Vacíos en modo OIDC; en modo usuario_iam vienen del environment protegido
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       - id: ecr
         uses: aws-actions/amazon-ecr-login@v2
       - name: Publicar en ECR
@@ -448,10 +460,13 @@ jobs:
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
           terraform_wrapper: false
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ inputs.aws-role-arn }}
           aws-region: ${{ inputs.aws-region }}
+          # Vacíos en modo OIDC; en modo usuario_iam vienen del environment protegido
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       - name: Terraform apply
         id: tf
         working-directory: ${{ inputs.iac-dir }}
@@ -534,10 +549,13 @@ jobs:
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
           terraform_wrapper: false
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ inputs.aws-role-arn }}
           aws-region: ${{ inputs.aws-region }}
+          # Vacíos en modo OIDC; en modo usuario_iam vienen del environment protegido
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       - name: Terraform destroy
         working-directory: ${{ inputs.iac-dir }}
         run: |
@@ -562,7 +580,6 @@ jobs:
     permissions:
       contents: read
       actions: read
-      id-token: write
     outputs:
       gate: ${{ steps.gate.outputs.gate }}
     env:
@@ -608,20 +625,39 @@ jobs:
             metricas.json
             reports/sbom.cdx.json
           retention-days: 90
-      - name: Publicar reporte en S3 (opcional, solo rama principal)
-        if: always() && inputs.findings-bucket != '' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-        uses: aws-actions/configure-aws-credentials@v4
+
+  publish-report:
+    name: "Reporte · Publicar en S3"
+    needs: report
+    if: >-
+      always() && !cancelled() && needs.report.result != 'skipped' &&
+      inputs.findings-bucket != '' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: staging
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      FINDINGS_BUCKET: ${{ inputs.findings-bucket }}
+      PREFIJO: ${{ inputs.grupo || github.event.repository.name }}
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: devsecops-reporte
+          path: reporte
+      - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ inputs.aws-role-arn }}
           aws-region: ${{ inputs.aws-region }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       - name: Subir a S3
-        if: always() && inputs.findings-bucket != '' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-        env:
-          PREFIJO: ${{ inputs.grupo || github.event.repository.name }}
         run: |
           DEST="s3://$FINDINGS_BUCKET/$PREFIJO/$(date -u +%Y-%m-%d)/$GITHUB_RUN_ID"
-          aws s3 cp hallazgos.json "$DEST/hallazgos.json"
-          aws s3 cp metricas.json "$DEST/metricas.json"
+          aws s3 cp reporte/hallazgos.json "$DEST/hallazgos.json"
+          aws s3 cp reporte/metricas.json "$DEST/metricas.json"
 
   # ===========================================================================
   #  ETAPA 6 — PROMOCIÓN (aprobación manual del rol DevSecOps)
@@ -639,10 +675,13 @@ jobs:
     env:
       ECR_REPOSITORY: ${{ inputs.ecr-repository }}
     steps:
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ inputs.aws-role-arn }}
           aws-region: ${{ inputs.aws-region }}
+          # Vacíos en modo OIDC; en modo usuario_iam vienen del environment protegido
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       - name: Marcar imagen aprobada (approved-<sha>)
         run: |
           MANIFEST=$(aws ecr batch-get-image --repository-name "$ECR_REPOSITORY" \

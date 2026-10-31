@@ -1,0 +1,6 @@
+# Estado y datos locales del bootstrap: contienen información de la cuenta
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+crash.log

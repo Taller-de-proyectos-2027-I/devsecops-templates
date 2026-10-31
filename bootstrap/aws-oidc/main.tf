@@ -1,7 +1,10 @@
 # -----------------------------------------------------------------------------
 # BOOTSTRAP (se ejecuta UNA vez, localmente, por el rol DevSecOps)
 # Crea la base de confianza entre GitHub Actions y la cuenta AWS:
-#   - Proveedor OIDC de GitHub y rol que asume el pipeline (sin access keys)
+#   - Rol que asume el pipeline, por uno de dos modos (var.modo_autenticacion):
+#       oidc        -> proveedor OIDC de GitHub, sin llaves (recomendado)
+#       usuario_iam -> usuario IAM sin permisos propios que solo puede asumir
+#                      el rol; para cuentas cuya SCP prohíbe crear proveedores OIDC
 #   - Bucket del estado de Terraform y bucket de reportes
 #   - Repositorios ECR por grupo
 #   - Rol/perfil de instancia para el staging (solo lectura de ECR)
@@ -40,31 +43,81 @@ locals {
   ])
 }
 
-# --- Confianza OIDC GitHub -> AWS ---------------------------------------------
+# --- Confianza GitHub -> AWS -----------------------------------------------------
+locals {
+  usar_oidc    = var.modo_autenticacion == "oidc"
+  usar_usuario = var.modo_autenticacion == "usuario_iam"
+}
+
+# Modo oidc: GitHub obtiene credenciales temporales sin llaves guardadas
 resource "aws_iam_openid_connect_provider" "github" {
+  count           = local.usar_oidc ? 1 : 0
   url             = "https://token.actions.githubusercontent.com"
   client_id_list  = ["sts.amazonaws.com"]
   thumbprint_list = ["6938fd4d98bab03faadb97b34396831e3780aea1", "1c58a3a8518e8759bf075b76b750d4f2df264fcd"]
 }
 
-data "aws_iam_policy_document" "confianza" {
+# Modo usuario_iam: identidad mínima cuyas llaves viven solo en los environments
+# protegidos de GitHub. No tiene permisos propios: únicamente puede asumir el rol.
+resource "aws_iam_user" "pipeline" {
+  # checkov:skip=CKV_AWS_273:La cuenta prohibe OIDC por SCP; el usuario solo puede asumir el rol del pipeline
+  count = local.usar_usuario ? 1 : 0
+  name  = "devsecops-pipeline"
+  tags = {
+    Proposito = "GitHub Actions - solo sts:AssumeRole"
+  }
+}
+
+data "aws_iam_policy_document" "usuario_solo_asumir" {
   statement {
-    actions = ["sts:AssumeRoleWithWebIdentity"]
-    principals {
-      type        = "Federated"
-      identifiers = [aws_iam_openid_connect_provider.github.arn]
+    sid       = "SoloAsumirRolPipeline"
+    actions   = ["sts:AssumeRole", "sts:TagSession"]
+    resources = ["arn:aws:iam::${local.cuenta}:role/devsecops-github-actions"]
+  }
+}
+
+resource "aws_iam_user_policy" "pipeline" {
+  # checkov:skip=CKV_AWS_40:Politica minima (solo sts:AssumeRole) sobre un unico usuario tecnico; un grupo no aporta control adicional
+  count  = local.usar_usuario ? 1 : 0
+  name   = "solo-asumir-rol-pipeline"
+  user   = aws_iam_user.pipeline[0].name
+  policy = data.aws_iam_policy_document.usuario_solo_asumir.json
+}
+
+data "aws_iam_policy_document" "confianza" {
+  dynamic "statement" {
+    for_each = local.usar_oidc ? [1] : []
+    content {
+      sid     = "GitHubOIDC"
+      actions = ["sts:AssumeRoleWithWebIdentity"]
+      principals {
+        type        = "Federated"
+        identifiers = [aws_iam_openid_connect_provider.github[0].arn]
+      }
+      condition {
+        test     = "StringEquals"
+        variable = "token.actions.githubusercontent.com:aud"
+        values   = ["sts.amazonaws.com"]
+      }
+      # Solo la rama main y los environments protegidos pueden asumir el rol;
+      # un pull request NUNCA obtiene credenciales de AWS.
+      condition {
+        test     = "StringLike"
+        variable = "token.actions.githubusercontent.com:sub"
+        values   = local.sujetos
+      }
     }
-    condition {
-      test     = "StringEquals"
-      variable = "token.actions.githubusercontent.com:aud"
-      values   = ["sts.amazonaws.com"]
-    }
-    # Solo la rama main y los environments protegidos pueden asumir el rol;
-    # un pull request NUNCA obtiene credenciales de AWS.
-    condition {
-      test     = "StringLike"
-      variable = "token.actions.githubusercontent.com:sub"
-      values   = local.sujetos
+  }
+
+  dynamic "statement" {
+    for_each = local.usar_usuario ? [1] : []
+    content {
+      sid     = "UsuarioPipeline"
+      actions = ["sts:AssumeRole", "sts:TagSession"]
+      principals {
+        type        = "AWS"
+        identifiers = [aws_iam_user.pipeline[0].arn]
+      }
     }
   }
 }

@@ -3,6 +3,16 @@ variable "aws_region" {
   default = "us-east-2"
 }
 
+variable "modo_autenticacion" {
+  description = "oidc (recomendado) o usuario_iam (si una SCP de la organización prohíbe crear proveedores OIDC)"
+  type        = string
+  default     = "oidc"
+  validation {
+    condition     = contains(["oidc", "usuario_iam"], var.modo_autenticacion)
+    error_message = "modo_autenticacion debe ser \"oidc\" o \"usuario_iam\"."
+  }
+}
+
 variable "github_org" {
   description = "Organización de GitHub (ej. taller-proyectos-usmp)"
   type        = string

@@ -21,3 +21,8 @@ output "instance_profile_name" {
   description = "Valor de instance_profile_name en infra/staging.tfvars"
   value       = aws_iam_instance_profile.staging_ec2.name
 }
+
+output "usuario_pipeline" {
+  description = "Solo en modo usuario_iam: usuario al que se le crean las llaves (fuera de Terraform)"
+  value       = local.usar_usuario ? aws_iam_user.pipeline[0].name : null
+}
