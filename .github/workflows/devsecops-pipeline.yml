@@ -152,14 +152,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Escanear secretos en el código
         run: |
           mkdir -p reports
           docker run --rm -v "$PWD:/repo" "$GITLEAKS_IMAGE" \
             dir /repo --redact --exit-code 0 \
             --report-format sarif --report-path /repo/reports/gitleaks.sarif
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         if: always()
         with:
           name: reporte-gitleaks
@@ -175,13 +175,13 @@ jobs:
       APP_DIR: ${{ inputs.app-dir }}
       BUILD_TOOL: ${{ inputs.build-tool }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
         with:
           repository: ${{ env.TEMPLATES_REPO }}
           ref: ${{ inputs.templates-ref }}
           path: .devsecops-templates
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: ${{ inputs.java-version }}
@@ -214,7 +214,7 @@ jobs:
             -include .devsecops-templates/policies/spotbugs-security-include.xml \
             ${CP:+-auxclasspath "$CP"} \
             -sarif=reports/spotbugs.sarif "${CLASSES[@]}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         if: always()
         with:
           name: reporte-spotbugs
@@ -230,8 +230,8 @@ jobs:
       APP_DIR: ${{ inputs.app-dir }}
       SEMGREP_CONFIGS: ${{ inputs.semgrep-configs }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Escanear con Semgrep
@@ -242,7 +242,7 @@ jobs:
           read -ra CONFIGS <<< "$SEMGREP_CONFIGS"
           for c in "${CONFIGS[@]}"; do ARGS+=(--config "$c"); done
           semgrep scan "${ARGS[@]}" --metrics=off --sarif --output reports/semgrep.sarif "$APP_DIR"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         if: always()
         with:
           name: reporte-semgrep
@@ -257,7 +257,7 @@ jobs:
     env:
       APP_DIR: ${{ inputs.app-dir }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Escanear dependencias y generar SBOM (CycloneDX)
         run: |
           mkdir -p reports
@@ -267,7 +267,7 @@ jobs:
           }
           trivy fs --scanners vuln --format sarif --output reports/trivy-fs.sarif "$APP_DIR"
           trivy fs --skip-db-update --skip-java-db-update --format cyclonedx --output reports/sbom.cdx.json "$APP_DIR"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         if: always()
         with:
           name: reporte-trivy-fs
@@ -285,8 +285,8 @@ jobs:
       IAC_DIR: ${{ inputs.iac-dir }}
       DOCKERFILE: ${{ inputs.dockerfile }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Escanear Terraform y Dockerfile
@@ -308,7 +308,7 @@ jobs:
           else
             echo "::notice::Sin Dockerfile ($DOCKERFILE)"
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         if: always()
         with:
           name: reporte-checkov
@@ -332,13 +332,13 @@ jobs:
             echo "::error::Un escáner falló al ejecutarse; el gate no puede evaluarse con datos incompletos."
             exit 1
           fi
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
         with:
           repository: ${{ env.TEMPLATES_REPO }}
           ref: ${{ inputs.templates-ref }}
           path: .devsecops-templates
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           pattern: reporte-*
           path: reports
@@ -370,8 +370,8 @@ jobs:
       FAIL_ON: ${{ inputs.fail-on }}
       ECR_REPOSITORY: ${{ inputs.ecr-repository }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
         with:
           repository: ${{ env.TEMPLATES_REPO }}
           ref: ${{ inputs.templates-ref }}
@@ -388,7 +388,7 @@ jobs:
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:/src" -w /src \
             -e TRIVY_DB_REPOSITORY -e TRIVY_JAVA_DB_REPOSITORY "$TRIVY_IMAGE" \
             image --scanners vuln --format sarif --output reports/trivy-image.sarif app-local:"$GITHUB_SHA"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         if: always()
         with:
           name: reporte-trivy-image
@@ -443,7 +443,7 @@ jobs:
       HEALTH_PATH: ${{ inputs.health-path }}
       STATE_KEY: ${{ inputs.grupo || github.event.repository.name }}/staging.tfstate
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
@@ -503,7 +503,7 @@ jobs:
           else
             echo "::notice::No se encontró especificación OpenAPI en $OPENAPI_PATH; se omite el API scan"
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         if: always()
         with:
           name: reporte-zap
@@ -529,7 +529,7 @@ jobs:
       APP_PORT: ${{ inputs.app-port }}
       STATE_KEY: ${{ inputs.grupo || github.event.repository.name }}/staging.tfstate
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
@@ -570,13 +570,13 @@ jobs:
       APP_DIR: ${{ inputs.app-dir }}
       FINDINGS_BUCKET: ${{ inputs.findings-bucket }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
         with:
           repository: ${{ env.TEMPLATES_REPO }}
           ref: ${{ inputs.templates-ref }}
           path: .devsecops-templates
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           pattern: reporte-*
           path: reports
@@ -599,7 +599,7 @@ jobs:
           set -e
           if [ $CODE -eq 0 ]; then echo "gate=aprobado" >> "$GITHUB_OUTPUT"; else echo "gate=bloqueado" >> "$GITHUB_OUTPUT"; fi
           exit $CODE
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         if: always()
         with:
           name: devsecops-reporte

@@ -375,6 +375,36 @@ def resumen_md(hallazgos, umbral, bloqueantes, metricas, avisos, alcance) -> str
 
 
 # --------------------------------------------------------------------------- #
+# Anotaciones de GitHub (se ven en el PR, en la pestaña "Files changed" y en el run)
+# --------------------------------------------------------------------------- #
+MAX_ANOTACIONES = 8  # GitHub muestra hasta 10 anotaciones de error por paso (+ "y más" + resumen)
+
+
+def escapar_msg(texto: str) -> str:
+    return str(texto).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+def escapar_prop(texto: str) -> str:
+    return escapar_msg(texto).replace(":", "%3A").replace(",", "%2C")
+
+
+def anotar_bloqueantes(bloqueantes) -> None:
+    orden = sorted(bloqueantes, key=lambda x: -RANGO[x["severidad"]])
+    for h in orden[:MAX_ANOTACIONES]:
+        u = h.get("ubicacion") or {}
+        props = [f"title={escapar_prop(h['severidad'] + ' · ' + h['herramienta'] + ' · ' + h['regla'])}"]
+        if u.get("archivo"):
+            props.append(f"file={escapar_prop(u['archivo'])}")
+            if u.get("linea"):
+                props.append(f"line={int(u['linea'])}")
+        donde = u.get("url") or u.get("archivo") or "-"
+        print(f"::error {','.join(props)}::{escapar_msg(h['titulo'] + ' [' + donde + '] id=' + h['id'])}")
+    if len(orden) > MAX_ANOTACIONES:
+        print(f"::error::… y {len(orden) - MAX_ANOTACIONES} hallazgo(s) bloqueante(s) más; "
+              "ver el resumen del run o el artefacto devsecops-reporte")
+
+
+# --------------------------------------------------------------------------- #
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--reports", required=True, help="Carpeta con los reportes (se busca recursivamente)")
@@ -490,7 +520,8 @@ def main() -> int:
             f.write(md)
     print(md)
     for av in avisos:
-        print(f"::warning::{av}")
+        print(f"::warning::{escapar_msg(av)}")
+    anotar_bloqueantes(bloqueantes)
     if bloqueantes:
         print(f"::error::Gate de seguridad bloqueado: {len(bloqueantes)} hallazgo(s) >= {umbral}")
     return 1 if (bloqueantes and a.enforce) else 0
