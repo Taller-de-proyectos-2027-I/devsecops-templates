@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Solo se reportan los patrones de la categoría SECURITY (FindSecBugs).
+     Los grupos pueden ampliar a otras categorías editando una copia de este filtro. -->
+<FindBugsFilter>
+  <Match>
+    <Bug category="SECURITY"/>
+  </Match>
+</FindBugsFilter>

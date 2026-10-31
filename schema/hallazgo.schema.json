@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ORG/devsecops-templates/schema/hallazgo.schema.json",
+  "title": "Reporte DevSecOps consolidado (contrato de datos v1.0)",
+  "description": "Salida de normalize_gate.py (hallazgos.json). Fuente única para los líderes, el agente de IA y las métricas de la investigación.",
+  "type": "object",
+  "required": ["schema_version", "repo", "commit", "fecha_deteccion", "alcance", "gate", "hallazgos"],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "repo": { "type": ["string", "null"], "description": "org/repositorio" },
+    "grupo": { "type": ["string", "null"] },
+    "sprint": { "type": ["string", "null"] },
+    "rama": { "type": ["string", "null"] },
+    "evento": { "type": ["string", "null"], "description": "pull_request | push | workflow_dispatch" },
+    "commit": { "type": ["string", "null"] },
+    "fecha_commit": { "type": ["string", "null"], "format": "date-time" },
+    "fecha_deteccion": { "type": "string", "format": "date-time" },
+    "run_id": { "type": ["string", "null"] },
+    "run_url": { "type": ["string", "null"] },
+    "alcance": { "enum": ["ci", "image", "dast", "all"] },
+    "gate": {
+      "type": "object",
+      "required": ["umbral", "resultado", "bloqueantes"],
+      "properties": {
+        "umbral": { "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO", "NONE"] },
+        "resultado": { "enum": ["aprobado", "bloqueado"] },
+        "bloqueantes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "fuentes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "herramienta": { "type": "string" },
+          "archivo": { "type": "string" },
+          "hallazgos": { "type": "integer" }
+        }
+      }
+    },
+    "hallazgos": { "type": "array", "items": { "$ref": "#/$defs/hallazgo" } }
+  },
+  "$defs": {
+    "hallazgo": {
+      "type": "object",
+      "required": ["id", "herramienta", "categoria", "etapa", "regla", "titulo", "severidad", "estado", "bloquea"],
+      "properties": {
+        "id": { "type": "string", "description": "Huella estable (sha256 truncado) para seguir el hallazgo entre ejecuciones" },
+        "repo": { "type": ["string", "null"] },
+        "grupo": { "type": ["string", "null"] },
+        "sprint": { "type": ["string", "null"] },
+        "commit": { "type": ["string", "null"] },
+        "fecha_commit": { "type": ["string", "null"], "format": "date-time" },
+        "fecha_deteccion": { "type": "string", "format": "date-time" },
+        "run_id": { "type": ["string", "null"] },
+        "herramienta": { "enum": ["gitleaks", "spotbugs-findsecbugs", "semgrep", "trivy-fs", "checkov", "trivy-image", "zap-baseline", "zap-api"] },
+        "categoria": { "enum": ["secretos", "sast", "sca", "iac", "contenedor", "dast"] },
+        "etapa": { "enum": ["integracion", "build", "pruebas"] },
+        "regla": { "type": "string" },
+        "titulo": { "type": "string" },
+        "severidad": { "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"] },
+        "cwe": { "type": "array", "items": { "type": "string", "pattern": "^CWE-\\d+$" } },
+        "cve": { "type": ["string", "null"] },
+        "ubicacion": {
+          "type": "object",
+          "properties": {
+            "archivo": { "type": ["string", "null"] },
+            "linea": { "type": ["integer", "null"] },
+            "url": { "type": ["string", "null"] },
+            "instancias": { "type": "integer" }
+          }
+        },
+        "estado": { "enum": ["abierto", "suprimido"] },
+        "supresion": {
+          "type": ["object", "null"],
+          "properties": {
+            "origen": { "enum": ["herramienta", "suppressions.yml"] },
+            "justificacion": { "type": "string" },
+            "aprobado_por": { "type": "string" },
+            "expira": { "type": ["string", "null"] }
+          }
+        },
+        "bloquea": { "type": "boolean", "description": "true si cuenta para bloquear el gate" }
+      }
+    }
+  }
+}

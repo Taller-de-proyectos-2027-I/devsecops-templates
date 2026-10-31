@@ -1,0 +1,652 @@
+# =============================================================================
+#  Pipeline DevSecOps reutilizable — Taller de Proyectos (USMP)
+#  Integración → Build → Despliegue a staging (AWS) → Pruebas dinámicas → Reporte
+#
+#  Los repositorios de cada grupo NO copian este archivo: lo invocan con
+#    uses: <org>/devsecops-templates/.github/workflows/devsecops-pipeline.yml@v1
+#  y lo adaptan con los "inputs" de abajo (ver README.md y examples/).
+#
+#  Convención: los jobs cuyo nombre empieza con "SEC ·" son de seguridad; el
+#  reporte final los usa para calcular el overhead del pipeline.
+# =============================================================================
+name: devsecops-pipeline
+
+on:
+  workflow_call:
+    inputs:
+      # ---- Contexto del grupo (alimenta el contrato de datos) ---------------
+      grupo:
+        description: "Identificador del grupo (ej. g01)"
+        type: string
+        default: ""
+      sprint:
+        description: "Sprint actual (ej. S3)"
+        type: string
+        default: ""
+      # ---- Aplicación Java ---------------------------------------------------
+      app-dir:
+        description: "Carpeta del proyecto Spring Boot"
+        type: string
+        default: "."
+      build-tool:
+        description: "maven | gradle"
+        type: string
+        default: "maven"
+      java-version:
+        type: string
+        default: "21"
+      # ---- Política del gate -------------------------------------------------
+      fail-on:
+        description: "Severidad mínima que bloquea: CRITICAL | HIGH | MEDIUM | LOW | NONE"
+        type: string
+        default: "HIGH"
+      # ---- Interruptores por herramienta (adaptación por grupo) --------------
+      enable-gitleaks:
+        type: boolean
+        default: true
+      enable-spotbugs:
+        type: boolean
+        default: true
+      enable-semgrep:
+        type: boolean
+        default: true
+      semgrep-configs:
+        description: "Reglas de Semgrep separadas por espacio"
+        type: string
+        default: "p/java p/owasp-top-ten"
+      enable-trivy-fs:
+        type: boolean
+        default: true
+      enable-checkov:
+        type: boolean
+        default: true
+      iac-dir:
+        description: "Carpeta Terraform (vacío = sin IaC)"
+        type: string
+        default: "infra"
+      enable-dast:
+        type: boolean
+        default: true
+      # ---- Despliegue a AWS --------------------------------------------------
+      deploy:
+        description: "Construir, publicar imagen y desplegar staging (usar solo en push a main)"
+        type: boolean
+        default: false
+      aws-region:
+        type: string
+        default: "us-east-1"
+      aws-role-arn:
+        description: "Rol IAM que GitHub asume por OIDC (sin access keys)"
+        type: string
+        default: ""
+      ecr-repository:
+        description: "Nombre del repositorio ECR del grupo"
+        type: string
+        default: ""
+      dockerfile:
+        description: "Ruta del Dockerfile (relativa a la raíz del repo)"
+        type: string
+        default: "Dockerfile"
+      tf-state-bucket:
+        description: "Bucket S3 para el estado de Terraform"
+        type: string
+        default: ""
+      ephemeral-staging:
+        description: "Destruir staging al terminar el DAST (ahorra créditos)"
+        type: boolean
+        default: true
+      app-port:
+        type: number
+        default: 8080
+      health-path:
+        type: string
+        default: "/actuator/health"
+      openapi-path:
+        description: "Ruta OpenAPI para el escaneo de API de ZAP (vacío = omitir)"
+        type: string
+        default: "/v3/api-docs"
+      promote:
+        description: "Pedir aprobación y marcar la imagen como release candidate"
+        type: boolean
+        default: false
+      findings-bucket:
+        description: "Bucket S3 opcional donde se publica el reporte consolidado"
+        type: string
+        default: ""
+      # ---- Versiones (fijadas para reproducibilidad) -------------------------
+      templates-ref:
+        description: "Rama o tag de devsecops-templates a usar para scripts y políticas"
+        type: string
+        default: "main"
+    outputs:
+      gate-result:
+        description: "aprobado | bloqueado"
+        value: ${{ jobs.report.outputs.gate }}
+
+permissions:
+  contents: read
+
+env:
+  GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks:v8.21.2
+  TRIVY_IMAGE: aquasec/trivy:0.60.0
+  ZAP_IMAGE: ghcr.io/zaproxy/zaproxy:stable
+  SEMGREP_VERSION: "1.182.1"
+  CHECKOV_VERSION: "3.3.30"
+  SPOTBUGS_VERSION: "4.8.6"
+  FINDSECBUGS_VERSION: "1.13.0"
+  TERRAFORM_VERSION: "1.10.5"
+  # Espejo de la BD de Trivy para evitar límites de descarga de ghcr.io
+  TRIVY_DB_REPOSITORY: mirror.gcr.io/aquasec/trivy-db
+  TRIVY_JAVA_DB_REPOSITORY: mirror.gcr.io/aquasec/trivy-java-db
+  DEVSECOPS_GRUPO: ${{ inputs.grupo }}
+  DEVSECOPS_SPRINT: ${{ inputs.sprint }}
+  TEMPLATES_REPO: ${{ github.repository_owner }}/devsecops-templates
+
+jobs:
+  # ===========================================================================
+  #  ETAPA 1 — INTEGRACIÓN (corre en cada PR y push)
+  # ===========================================================================
+  sec-secrets:
+    name: "SEC · Secretos (Gitleaks)"
+    if: inputs.enable-gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Escanear secretos en el código
+        run: |
+          mkdir -p reports
+          docker run --rm -v "$PWD:/repo" "$GITLEAKS_IMAGE" \
+            dir /repo --redact --exit-code 0 \
+            --report-format sarif --report-path /repo/reports/gitleaks.sarif
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reporte-gitleaks
+          path: reports/gitleaks.sarif
+          if-no-files-found: warn
+
+  sec-sast-spotbugs:
+    name: "SEC · SAST Java (SpotBugs + FindSecBugs)"
+    if: inputs.enable-spotbugs
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      APP_DIR: ${{ inputs.app-dir }}
+      BUILD_TOOL: ${{ inputs.build-tool }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TEMPLATES_REPO }}
+          ref: ${{ inputs.templates-ref }}
+          path: .devsecops-templates
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java-version }}
+          cache: ${{ inputs.build-tool }}
+      - name: Compilar (sin pruebas)
+        working-directory: ${{ inputs.app-dir }}
+        run: |
+          if [ "$BUILD_TOOL" = "gradle" ]; then
+            chmod +x ./gradlew && ./gradlew --no-daemon assemble -x test
+          else
+            mvn -B -ntp -DskipTests package
+            mvn -B -ntp -q dependency:build-classpath -Dmdep.outputFile=.devsecops-cp.txt
+          fi
+      - name: Ejecutar SpotBugs con FindSecBugs
+        run: |
+          mkdir -p reports .tools
+          curl -sSLf -o .tools/sb.tgz \
+            "https://github.com/spotbugs/spotbugs/releases/download/${SPOTBUGS_VERSION}/spotbugs-${SPOTBUGS_VERSION}.tgz"
+          tar -xzf .tools/sb.tgz -C .tools
+          curl -sSLf -o .tools/findsecbugs.jar \
+            "https://repo1.maven.org/maven2/com/h3xstream/findsecbugs/findsecbugs-plugin/${FINDSECBUGS_VERSION}/findsecbugs-plugin-${FINDSECBUGS_VERSION}.jar"
+
+          mapfile -t CLASSES < <(find "$APP_DIR" -type d \( -path '*/target/classes' -o -path '*/build/classes/java/main' \))
+          CP=$(find "$APP_DIR" -name .devsecops-cp.txt -exec cat {} \; | tr '\n' ':')
+          if [ "${#CLASSES[@]}" -eq 0 ]; then echo "::error::No se encontraron clases compiladas"; exit 1; fi
+
+          java -jar ".tools/spotbugs-${SPOTBUGS_VERSION}/lib/spotbugs.jar" -textui -quiet \
+            -effort:max -low \
+            -pluginList .tools/findsecbugs.jar \
+            -include .devsecops-templates/policies/spotbugs-security-include.xml \
+            ${CP:+-auxclasspath "$CP"} \
+            -sarif=reports/spotbugs.sarif "${CLASSES[@]}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reporte-spotbugs
+          path: reports/spotbugs.sarif
+          if-no-files-found: warn
+
+  sec-sast-semgrep:
+    name: "SEC · SAST multilenguaje (Semgrep CE)"
+    if: inputs.enable-semgrep
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      APP_DIR: ${{ inputs.app-dir }}
+      SEMGREP_CONFIGS: ${{ inputs.semgrep-configs }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Escanear con Semgrep
+        run: |
+          pip install -q "semgrep==${SEMGREP_VERSION}"
+          mkdir -p reports
+          ARGS=()
+          read -ra CONFIGS <<< "$SEMGREP_CONFIGS"
+          for c in "${CONFIGS[@]}"; do ARGS+=(--config "$c"); done
+          semgrep scan "${ARGS[@]}" --metrics=off --sarif --output reports/semgrep.sarif "$APP_DIR"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reporte-semgrep
+          path: reports/semgrep.sarif
+          if-no-files-found: warn
+
+  sec-sca:
+    name: "SEC · Dependencias y SBOM (Trivy)"
+    if: inputs.enable-trivy-fs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      APP_DIR: ${{ inputs.app-dir }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Escanear dependencias y generar SBOM (CycloneDX)
+        run: |
+          mkdir -p reports
+          trivy() {
+            docker run --rm -v "$PWD:/src" -w /src -v "$HOME/.cache/trivy:/root/.cache/trivy" \
+              -e TRIVY_DB_REPOSITORY -e TRIVY_JAVA_DB_REPOSITORY "$TRIVY_IMAGE" "$@"
+          }
+          trivy fs --scanners vuln --format sarif --output reports/trivy-fs.sarif "$APP_DIR"
+          trivy fs --skip-db-update --skip-java-db-update --format cyclonedx --output reports/sbom.cdx.json "$APP_DIR"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reporte-trivy-fs
+          path: |
+            reports/trivy-fs.sarif
+            reports/sbom.cdx.json
+          if-no-files-found: warn
+
+  sec-iac:
+    name: "SEC · IaC y Dockerfile (Checkov)"
+    if: inputs.enable-checkov
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      IAC_DIR: ${{ inputs.iac-dir }}
+      DOCKERFILE: ${{ inputs.dockerfile }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Escanear Terraform y Dockerfile
+        run: |
+          pip install -q "checkov==${CHECKOV_VERSION}"
+          mkdir -p reports
+          # Checkov ignora -f cuando también recibe -d, por eso son dos ejecuciones
+          if [ -n "$IAC_DIR" ] && [ -d "$IAC_DIR" ]; then
+            checkov -d "$IAC_DIR" --framework terraform --quiet --soft-fail \
+              --output sarif --output-file-path reports
+            mv reports/results_sarif.sarif reports/checkov.sarif
+          else
+            echo "::notice::Sin carpeta Terraform ($IAC_DIR)"
+          fi
+          if [ -f "$DOCKERFILE" ]; then
+            checkov -f "$DOCKERFILE" --framework dockerfile --quiet --soft-fail \
+              --output sarif --output-file-path reports
+            mv reports/results_sarif.sarif reports/checkov-dockerfile.sarif
+          else
+            echo "::notice::Sin Dockerfile ($DOCKERFILE)"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reporte-checkov
+          path: reports/checkov*.sarif
+          if-no-files-found: warn
+
+  ci-gate:
+    name: "Gate de integración"
+    needs: [sec-secrets, sec-sast-spotbugs, sec-sast-semgrep, sec-sca, sec-iac]
+    if: always() && !cancelled()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      FAIL_ON: ${{ inputs.fail-on }}
+      APP_DIR: ${{ inputs.app-dir }}
+      RESULTADOS: ${{ toJSON(needs.*.result) }}
+    steps:
+      - name: Verificar que los escáneres terminaron
+        run: |
+          if echo "$RESULTADOS" | grep -q '"failure"'; then
+            echo "::error::Un escáner falló al ejecutarse; el gate no puede evaluarse con datos incompletos."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TEMPLATES_REPO }}
+          ref: ${{ inputs.templates-ref }}
+          path: .devsecops-templates
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: reporte-*
+          path: reports
+          merge-multiple: true
+      - name: Normalizar hallazgos y evaluar gate
+        run: |
+          pip install -q pyyaml
+          python3 .devsecops-templates/scripts/normalize_gate.py \
+            --reports reports --scope ci --fail-on "$FAIL_ON" --app-dir "$APP_DIR" \
+            --out hallazgos-ci.json --metrics-out metricas-ci.json --enforce
+
+  # ===========================================================================
+  #  ETAPA 2 — BUILD Y EMPAQUETADO (solo cuando deploy=true)
+  # ===========================================================================
+  build-image:
+    name: "Build · Imagen, escaneo y publicación en ECR"
+    needs: ci-gate
+    if: inputs.deploy && needs.ci-gate.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      image-uri: ${{ steps.push.outputs.image_uri }}
+    env:
+      APP_DIR: ${{ inputs.app-dir }}
+      DOCKERFILE: ${{ inputs.dockerfile }}
+      FAIL_ON: ${{ inputs.fail-on }}
+      ECR_REPOSITORY: ${{ inputs.ecr-repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TEMPLATES_REPO }}
+          ref: ${{ inputs.templates-ref }}
+          path: .devsecops-templates
+      - name: Validar configuración
+        run: |
+          [ -n "$ECR_REPOSITORY" ] || { echo "::error::Falta el input ecr-repository"; exit 1; }
+          [ -f "$DOCKERFILE" ] || { echo "::error::No existe $DOCKERFILE"; exit 1; }
+      - name: Construir imagen
+        run: docker build -f "$DOCKERFILE" -t app-local:"$GITHUB_SHA" "$APP_DIR"
+      - name: Escanear imagen (Trivy)
+        run: |
+          mkdir -p reports
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:/src" -w /src \
+            -e TRIVY_DB_REPOSITORY -e TRIVY_JAVA_DB_REPOSITORY "$TRIVY_IMAGE" \
+            image --scanners vuln --format sarif --output reports/trivy-image.sarif app-local:"$GITHUB_SHA"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reporte-trivy-image
+          path: reports/trivy-image.sarif
+          if-no-files-found: warn
+      - name: Gate de imagen (no se publica una imagen vulnerable)
+        run: |
+          pip install -q pyyaml
+          python3 .devsecops-templates/scripts/normalize_gate.py \
+            --reports reports --scope image --fail-on "$FAIL_ON" --app-dir "$APP_DIR" \
+            --out hallazgos-image.json --metrics-out metricas-image.json --enforce
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.aws-role-arn }}
+          aws-region: ${{ inputs.aws-region }}
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Publicar en ECR
+        id: push
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          IMAGE_URI="$REGISTRY/$ECR_REPOSITORY:$GITHUB_SHA"
+          docker tag app-local:"$GITHUB_SHA" "$IMAGE_URI"
+          docker push "$IMAGE_URI"
+          echo "image_uri=$IMAGE_URI" >> "$GITHUB_OUTPUT"
+
+  # ===========================================================================
+  #  ETAPA 3 — DESPLIEGUE A STAGING EN AWS (Terraform)
+  # ===========================================================================
+  deploy-staging:
+    name: "Deploy · Staging en AWS (Terraform)"
+    needs: build-image
+    if: inputs.deploy && needs.build-image.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: staging
+    concurrency:
+      group: staging-${{ github.repository }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      app-url: ${{ steps.tf.outputs.app_url }}
+    env:
+      IAC_DIR: ${{ inputs.iac-dir }}
+      TF_STATE_BUCKET: ${{ inputs.tf-state-bucket }}
+      AWS_REGION: ${{ inputs.aws-region }}
+      IMAGE_URI: ${{ needs.build-image.outputs.image-uri }}
+      APP_PORT: ${{ inputs.app-port }}
+      HEALTH_PATH: ${{ inputs.health-path }}
+      STATE_KEY: ${{ inputs.grupo || github.event.repository.name }}/staging.tfstate
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.aws-role-arn }}
+          aws-region: ${{ inputs.aws-region }}
+      - name: Terraform apply
+        id: tf
+        working-directory: ${{ inputs.iac-dir }}
+        run: |
+          [ -n "$TF_STATE_BUCKET" ] || { echo "::error::Falta el input tf-state-bucket"; exit 1; }
+          terraform init -input=false \
+            -backend-config="bucket=$TF_STATE_BUCKET" \
+            -backend-config="key=$STATE_KEY" \
+            -backend-config="region=$AWS_REGION" \
+            -backend-config="use_lockfile=true"
+          VARFILE=""; [ -f staging.tfvars ] && VARFILE="-var-file=staging.tfvars"
+          terraform apply -input=false -auto-approve $VARFILE \
+            -var "image_uri=$IMAGE_URI" -var "app_port=$APP_PORT" -var "aws_region=$AWS_REGION"
+          echo "app_url=$(terraform output -raw app_url)" >> "$GITHUB_OUTPUT"
+      - name: Esperar a que la aplicación responda
+        env:
+          APP_URL: ${{ steps.tf.outputs.app_url }}
+        run: |
+          for _ in $(seq 1 60); do
+            if curl -fsS -o /dev/null "$APP_URL$HEALTH_PATH"; then echo "Aplicación lista: $APP_URL"; exit 0; fi
+            sleep 10
+          done
+          echo "::error::La aplicación no respondió en $APP_URL$HEALTH_PATH tras 10 minutos"; exit 1
+
+  # ===========================================================================
+  #  ETAPA 4 — PRUEBAS DINÁMICAS (DAST contra staging)
+  # ===========================================================================
+  sec-dast:
+    name: "SEC · DAST (OWASP ZAP)"
+    needs: deploy-staging
+    if: inputs.enable-dast && needs.deploy-staging.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      APP_URL: ${{ needs.deploy-staging.outputs.app-url }}
+      OPENAPI_PATH: ${{ inputs.openapi-path }}
+    steps:
+      - name: ZAP baseline (pasivo)
+        run: |
+          mkdir -p zap && chmod 777 zap
+          docker run --rm -v "$PWD/zap:/zap/wrk:rw" "$ZAP_IMAGE" \
+            zap-baseline.py -t "$APP_URL" -J zap-baseline.json -I || true
+      - name: ZAP API scan (OpenAPI)
+        if: inputs.openapi-path != ''
+        run: |
+          if curl -fsS -o /dev/null "$APP_URL$OPENAPI_PATH"; then
+            docker run --rm -v "$PWD/zap:/zap/wrk:rw" "$ZAP_IMAGE" \
+              zap-api-scan.py -t "$APP_URL$OPENAPI_PATH" -f openapi -J zap-api.json -I || true
+          else
+            echo "::notice::No se encontró especificación OpenAPI en $OPENAPI_PATH; se omite el API scan"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reporte-zap
+          path: zap/*.json
+          if-no-files-found: warn
+
+  destroy-staging:
+    name: "Deploy · Destruir staging efímero"
+    needs: [deploy-staging, sec-dast]
+    if: always() && inputs.deploy && inputs.ephemeral-staging && needs.deploy-staging.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: staging
+    concurrency:
+      group: staging-${{ github.repository }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TF_STATE_BUCKET: ${{ inputs.tf-state-bucket }}
+      AWS_REGION: ${{ inputs.aws-region }}
+      APP_PORT: ${{ inputs.app-port }}
+      STATE_KEY: ${{ inputs.grupo || github.event.repository.name }}/staging.tfstate
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.aws-role-arn }}
+          aws-region: ${{ inputs.aws-region }}
+      - name: Terraform destroy
+        working-directory: ${{ inputs.iac-dir }}
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=$TF_STATE_BUCKET" \
+            -backend-config="key=$STATE_KEY" \
+            -backend-config="region=$AWS_REGION" \
+            -backend-config="use_lockfile=true"
+          VARFILE=""; [ -f staging.tfvars ] && VARFILE="-var-file=staging.tfvars"
+          terraform destroy -input=false -auto-approve $VARFILE \
+            -var "image_uri=destruccion" -var "app_port=$APP_PORT" -var "aws_region=$AWS_REGION"
+
+  # ===========================================================================
+  #  ETAPA 5 — REPORTE CONSOLIDADO (insumo para líderes y para el agente de IA)
+  # ===========================================================================
+  report:
+    name: "Reporte consolidado y métricas"
+    needs: [ci-gate, build-image, deploy-staging, sec-dast]
+    if: always() && !cancelled()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    outputs:
+      gate: ${{ steps.gate.outputs.gate }}
+    env:
+      FAIL_ON: ${{ inputs.fail-on }}
+      APP_DIR: ${{ inputs.app-dir }}
+      FINDINGS_BUCKET: ${{ inputs.findings-bucket }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TEMPLATES_REPO }}
+          ref: ${{ inputs.templates-ref }}
+          path: .devsecops-templates
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: reporte-*
+          path: reports
+          merge-multiple: true
+      - name: Obtener duración de los jobs (overhead)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
+            > jobs.json || echo '{"jobs":[]}' > jobs.json
+      - name: Consolidar hallazgos y métricas
+        id: gate
+        run: |
+          pip install -q pyyaml
+          set +e
+          python3 .devsecops-templates/scripts/normalize_gate.py \
+            --reports reports --scope all --fail-on "$FAIL_ON" --app-dir "$APP_DIR" \
+            --jobs-json jobs.json --out hallazgos.json --metrics-out metricas.json --enforce
+          CODE=$?
+          set -e
+          if [ $CODE -eq 0 ]; then echo "gate=aprobado" >> "$GITHUB_OUTPUT"; else echo "gate=bloqueado" >> "$GITHUB_OUTPUT"; fi
+          exit $CODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: devsecops-reporte
+          path: |
+            hallazgos.json
+            metricas.json
+            reports/sbom.cdx.json
+          retention-days: 90
+      - name: Publicar reporte en S3 (opcional, solo rama principal)
+        if: always() && inputs.findings-bucket != '' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.aws-role-arn }}
+          aws-region: ${{ inputs.aws-region }}
+      - name: Subir a S3
+        if: always() && inputs.findings-bucket != '' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        env:
+          PREFIJO: ${{ inputs.grupo || github.event.repository.name }}
+        run: |
+          DEST="s3://$FINDINGS_BUCKET/$PREFIJO/$(date -u +%Y-%m-%d)/$GITHUB_RUN_ID"
+          aws s3 cp hallazgos.json "$DEST/hallazgos.json"
+          aws s3 cp metricas.json "$DEST/metricas.json"
+
+  # ===========================================================================
+  #  ETAPA 6 — PROMOCIÓN (aprobación manual del rol DevSecOps)
+  # ===========================================================================
+  promote:
+    name: "Release · Aprobación y marcado de la imagen"
+    needs: [report, build-image]
+    if: inputs.deploy && inputs.promote && needs.report.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: aprobacion-release
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ECR_REPOSITORY: ${{ inputs.ecr-repository }}
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.aws-role-arn }}
+          aws-region: ${{ inputs.aws-region }}
+      - name: Marcar imagen aprobada (approved-<sha>)
+        run: |
+          MANIFEST=$(aws ecr batch-get-image --repository-name "$ECR_REPOSITORY" \
+            --image-ids imageTag="$GITHUB_SHA" --query 'images[0].imageManifest' --output text)
+          aws ecr put-image --repository-name "$ECR_REPOSITORY" \
+            --image-tag "approved-$GITHUB_SHA" --image-manifest "$MANIFEST"
+          echo "### ✅ Imagen aprobada: \`$ECR_REPOSITORY:approved-$GITHUB_SHA\`" >> "$GITHUB_STEP_SUMMARY"

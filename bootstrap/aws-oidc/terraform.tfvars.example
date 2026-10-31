@@ -1,0 +1,6 @@
+aws_region      = "us-east-1"
+github_org      = "NOMBRE-DE-LA-ORG"
+repos           = ["g01-sistema", "g02-sistema"]
+grupos          = ["g01", "g02"]
+presupuesto_usd = 50
+correos_alerta  = ["devsecops@ejemplo.edu.pe"]

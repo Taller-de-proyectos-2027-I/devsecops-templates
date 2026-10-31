@@ -1,0 +1,45 @@
+# Workflow que va en el repositorio de cada grupo.
+# Solo invoca el pipeline central; la lógica vive en devsecops-templates.
+name: DevSecOps
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Un solo pipeline por rama a la vez (evita dos despliegues simultáneos a staging)
+concurrency:
+  group: devsecops-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  actions: read      # leer la duración de los jobs (métrica de overhead)
+  id-token: write    # OIDC hacia AWS (sin access keys)
+
+jobs:
+  devsecops:
+    uses: Taller-de-proyectos-2027-I/devsecops-templates/.github/workflows/devsecops-pipeline.yml@v1
+    with:
+      grupo: g01
+      sprint: ${{ vars.SPRINT_ACTUAL }}      # variable del repo, la actualiza el líder
+      app-dir: "."
+      build-tool: maven
+      java-version: "21"
+      fail-on: HIGH
+      iac-dir: infra
+      dockerfile: Dockerfile
+      # Despliegue solo en push a main; en PR corre únicamente la etapa de integración
+      deploy: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      aws-region: us-east-1
+      aws-role-arn: ${{ vars.AWS_ROLE_ARN }}
+      ecr-repository: taller/g01
+      tf-state-bucket: ${{ vars.TF_STATE_BUCKET }}
+      ephemeral-staging: true
+      health-path: /actuator/health
+      openapi-path: /v3/api-docs
+      promote: true
+      findings-bucket: ${{ vars.FINDINGS_BUCKET }}
+      templates-ref: v1

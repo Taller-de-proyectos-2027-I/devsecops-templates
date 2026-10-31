@@ -1,0 +1,15 @@
+# Riesgos aceptados. Cada entrada requiere justificación y aprobación del rol de
+# Ciberseguridad; las entradas vencidas dejan de aplicarse automáticamente.
+# El "id" aparece en el resumen del gate y en hallazgos.json.
+#
+# - id: 3f9a2c1b7d4e5f60
+#   justificacion: "Falso positivo: el parámetro se valida con @Pattern antes de la consulta"
+#   aprobado_por: "usuario-ciberseguridad"
+#   expira: 2026-12-15
+#
+# - regla: CVE-2024-38816        # también se puede suprimir por regla (+ herramienta/archivo)
+#   herramienta: trivy-fs
+#   justificacion: "No usamos RouterFunctions; se actualiza en el sprint 5"
+#   aprobado_por: "usuario-ciberseguridad"
+#   expira: 2026-11-30
+[]
