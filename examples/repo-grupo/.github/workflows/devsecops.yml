@@ -44,5 +44,8 @@ jobs:
       promote: true
       findings-bucket: ${{ vars.FINDINGS_BUCKET }}
       templates-ref: v1
-    # Sin "secrets: inherit" (mínimo privilegio): en modo usuario_iam el pipeline lee las
-    # llaves directamente de los environments protegidos staging / aprobacion-release.
+    # Modo usuario_iam: GitHub solo expone los secrets de ENVIRONMENT a un workflow
+    # reutilizable si el caller usa "secrets: inherit". Riesgo aceptado (ver
+    # .devsecops/suppressions.yml): el workflow llamado es el pipeline propio fijado en @v1
+    # y las llaves solo existen en environments limitados a main.
+    secrets: inherit

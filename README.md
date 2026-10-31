@@ -73,6 +73,7 @@ El bootstrap crea el usuario `devsecops-pipeline`, que **no tiene permisos propi
    ```
 2. En **cada repositorio de grupo**, crear `AWS_ACCESS_KEY_ID` y `AWS_SECRET_ACCESS_KEY` como **secrets de los environments** `staging` y `aprobacion-release`.
    - **No** como secrets del repositorio ni de la organización, porque esos los puede leer el job de un PR.
+   - El workflow del grupo debe tener `secrets: inherit`; sin eso GitHub no entrega los secrets de environment al pipeline reutilizable. Semgrep lo marca, y por eso el ejemplo trae la supresión justificada en `.devsecops/suppressions.yml`.
 3. Rotar las llaves cada 90 días (`create-access-key` → actualizar secrets → `delete-access-key` de la anterior). Registrar la rotación en el log de cambios del framework.
 
 Es un **riesgo aceptado y documentado**: son llaves de larga duración, y se mitiga con privilegio mínimo, environments limitados a `main` y rotación.
