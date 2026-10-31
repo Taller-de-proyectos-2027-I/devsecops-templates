@@ -74,7 +74,7 @@ on:
         default: false
       aws-region:
         type: string
-        default: "us-east-1"
+        default: "us-east-2"
       aws-role-arn:
         description: "Rol IAM que GitHub asume por OIDC (sin access keys)"
         type: string

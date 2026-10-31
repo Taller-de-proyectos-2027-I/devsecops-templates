@@ -50,14 +50,18 @@ Lo mantiene el rol **DevSecOps**; cada grupo solo lo invoca desde su repositorio
 
 ### 2. Cuenta AWS (con los créditos)
 1. Proteger la cuenta raíz con MFA y crear un usuario administrador temporal **solo** para el bootstrap.
-2. Ejecutar el bootstrap:
+2. Preparar la PC desde donde se ejecuta el bootstrap (una sola vez):
+   - Instalar **AWS CLI v2** y **Terraform** (≥ 1.10).
+   - Iniciar sesión sin access keys: `aws login --region us-east-2` y verificar con `aws sts get-caller-identity`.
+   - La región de la cuenta es **us-east-2 (Ohio)**; todos los valores por defecto del pipeline la usan.
+3. Ejecutar el bootstrap:
    ```bash
    cd bootstrap/aws-oidc
    cp terraform.tfvars.example terraform.tfvars   # completar org, repos, grupos y correos
    terraform init && terraform apply
    ```
-3. Con los *outputs*, crear las **variables de organización** (Settings → Secrets and variables → Actions → Variables): `AWS_ROLE_ARN`, `TF_STATE_BUCKET` y `FINDINGS_BUCKET`. No son secretos, porque con OIDC no hay llaves que guardar.
-4. Eliminar las access keys del usuario administrador.
+4. Con los *outputs*, crear las **variables de organización** (Settings → Secrets and variables → Actions → Variables): `AWS_ROLE_ARN`, `TF_STATE_BUCKET` y `FINDINGS_BUCKET`. No son secretos, porque con OIDC no hay llaves que guardar.
+5. Si se creó un usuario con access keys para el bootstrap, eliminarlas.
 
 ### 3. Repositorio de cada grupo
 1. Crear `gXX-sistema` y copiar el contenido de `examples/repo-grupo/`.

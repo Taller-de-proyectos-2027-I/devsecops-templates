@@ -1,4 +1,4 @@
-aws_region      = "us-east-1"
+aws_region      = "us-east-2"
 github_org      = "NOMBRE-DE-LA-ORG"
 repos           = ["g01-sistema", "g02-sistema"]
 grupos          = ["g01", "g02"]

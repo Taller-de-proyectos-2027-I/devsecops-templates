@@ -31,9 +31,10 @@ jobs:
       fail-on: HIGH
       iac-dir: infra
       dockerfile: Dockerfile
-      # Despliegue solo en push a main; en PR corre únicamente la etapa de integración
-      deploy: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-      aws-region: us-east-1
+      # Despliegue solo en push a main y cuando AWS ya está configurado (variable AWS_ROLE_ARN);
+      # en PR corre únicamente la etapa de integración
+      deploy: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AWS_ROLE_ARN != '' }}
+      aws-region: us-east-2
       aws-role-arn: ${{ vars.AWS_ROLE_ARN }}
       ecr-repository: taller/g01
       tf-state-bucket: ${{ vars.TF_STATE_BUCKET }}
