@@ -338,7 +338,7 @@ jobs:
           repository: ${{ env.TEMPLATES_REPO }}
           ref: ${{ inputs.templates-ref }}
           path: .devsecops-templates
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v7
         with:
           pattern: reporte-*
           path: reports
@@ -576,7 +576,7 @@ jobs:
           repository: ${{ env.TEMPLATES_REPO }}
           ref: ${{ inputs.templates-ref }}
           path: .devsecops-templates
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v7
         with:
           pattern: reporte-*
           path: reports
