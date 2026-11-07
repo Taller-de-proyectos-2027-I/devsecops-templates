@@ -136,13 +136,13 @@ permissions:
   contents: read
 
 env:
-  GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks:v8.21.2
-  TRIVY_IMAGE: aquasec/trivy:0.60.0
+  GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks:v8.30.0
+  TRIVY_IMAGE: aquasec/trivy:0.76.1
   ZAP_IMAGE: ghcr.io/zaproxy/zaproxy:stable
   SEMGREP_VERSION: "1.182.1"
   CHECKOV_VERSION: "3.3.30"
-  SPOTBUGS_VERSION: "4.8.6"
-  FINDSECBUGS_VERSION: "1.13.0"
+  SPOTBUGS_VERSION: "4.10.4"
+  FINDSECBUGS_VERSION: "1.14.0"
   TERRAFORM_VERSION: "1.10.5"
   # Espejo de la BD de Trivy para evitar límites de descarga de ghcr.io
   TRIVY_DB_REPOSITORY: mirror.gcr.io/aquasec/trivy-db
@@ -523,9 +523,26 @@ jobs:
       - name: Esperar a que la aplicación responda
         env:
           APP_URL: ${{ steps.tf.outputs.app_url }}
+          EFIMERO: ${{ inputs.ephemeral-staging }}
         run: |
           for _ in $(seq 1 60); do
-            if curl -fsS -o /dev/null "$APP_URL$HEALTH_PATH"; then echo "Aplicación lista: $APP_URL"; exit 0; fi
+            if curl -fsS -o /dev/null "$APP_URL$HEALTH_PATH"; then
+              echo "::notice title=Staging disponible::$APP_URL"
+              {
+                echo "### Staging desplegado"
+                echo "- URL: $APP_URL"
+                echo "- Salud: $APP_URL$HEALTH_PATH"
+                if [ "$EFIMERO" = "true" ]; then
+                  echo "- Se destruirá al terminar el DAST."
+                else
+                  echo "- **Modo demostración: el staging queda encendido.** Ejecute el pipeline normal para destruirlo."
+                fi
+              } >> "$GITHUB_STEP_SUMMARY"
+              if [ "$EFIMERO" != "true" ]; then
+                echo "::warning title=Staging encendido::Modo demostración activo: la EC2 sigue consumiendo créditos hasta la próxima ejecución normal"
+              fi
+              exit 0
+            fi
             sleep 10
           done
           echo "::error::La aplicación no respondió en $APP_URL$HEALTH_PATH tras 10 minutos"; exit 1
