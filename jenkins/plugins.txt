@@ -1,0 +1,12 @@
+# Plugins mínimos (menos plugins = menos superficie de ataque)
+configuration-as-code
+job-dsl
+workflow-aggregator
+git
+github-branch-source
+pipeline-groovy-lib
+credentials-binding
+matrix-auth
+timestamper
+ws-cleanup
+pipeline-utility-steps

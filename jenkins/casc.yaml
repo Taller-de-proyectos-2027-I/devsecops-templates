@@ -1,0 +1,84 @@
+# Configuración de Jenkins como código (JCasC). Los ${...} vienen del archivo .env.
+jenkins:
+  systemMessage: "Jenkins DevSecOps · Taller de Proyectos (prototipo)"
+  numExecutors: 2                     # PROTOTIPO: ejecuta en el propio controlador (ver README)
+  mode: NORMAL
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "${JENKINS_ADMIN_USER}"
+          password: "${JENKINS_ADMIN_PASSWORD}"
+  authorizationStrategy:
+    globalMatrix:
+      entries:
+        - user:
+            name: "${JENKINS_ADMIN_USER}"
+            permissions: ["Overall/Administer"]
+        - group:
+            name: "authenticated"
+            permissions: ["Overall/Read", "Job/Read", "Job/Build"]
+  remotingSecurity:
+    enabled: true
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          - usernamePassword:
+              scope: GLOBAL
+              id: "github-token"
+              description: "Token de GitHub (lectura de repos y estado de commits)"
+              username: "${GITHUB_USER}"
+              password: "${GITHUB_TOKEN}"
+
+unclassified:
+  location:
+    url: "http://localhost:8080/"
+  globalLibraries:
+    libraries:
+      - name: "devsecops"
+        defaultVersion: "${DEVSECOPS_LIB_REF}"
+        implicit: false
+        allowVersionOverride: true
+        retriever:
+          modernSCM:
+            libraryPath: "jenkins/library/"
+            scm:
+              git:
+                remote: "https://github.com/${GITHUB_ORG}/devsecops-templates.git"
+
+# Un job multibranch por repositorio de grupo. Jenkins consulta GitHub cada 5 minutos
+# (no necesita IP pública ni webhooks) y reporta el resultado como estado del commit/PR.
+jobs:
+  - script: >
+      multibranchPipelineJob('g00-prueba') {
+        displayName('g00-prueba')
+        branchSources {
+          github {
+            id('g00-prueba')
+            repoOwner(System.getenv('GITHUB_ORG'))
+            repository('g00-prueba')
+            scanCredentialsId('github-token')
+            buildOriginBranch(true)
+            buildOriginBranchWithPR(false)
+            buildOriginPRMerge(true)
+            buildForkPRMerge(false)
+          }
+        }
+        factory {
+          workflowBranchProjectFactory {
+            scriptPath('Jenkinsfile')
+          }
+        }
+        triggers {
+          periodicFolderTrigger {
+            interval('5m')
+          }
+        }
+        orphanedItemStrategy {
+          discardOldItems {
+            numToKeep(10)
+          }
+        }
+      }
