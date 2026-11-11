@@ -395,6 +395,19 @@ def escapar_prop(texto: str) -> str:
     return escapar_msg(texto).replace(":", "%3A").replace(",", "%2C")
 
 
+def anotar_dast(hallazgos) -> None:
+    """Hallazgos de ZAP que no bloquean: avisos para que Ciberseguridad los revise."""
+    dast = [h for h in hallazgos if h["categoria"] == "dast" and h["estado"] == "abierto" and not h.get("bloquea")]
+    dast.sort(key=lambda x: -RANGO[x["severidad"]])
+    for h in dast[:MAX_ANOTACIONES]:
+        u = h.get("ubicacion") or {}
+        cwe = ",".join(h.get("cwe") or [])
+        print(f"::warning title={escapar_prop(h['severidad'] + ' · ' + h['herramienta'] + ' · ' + h['regla'])}::"
+              f"{escapar_msg(h['titulo'] + ' [' + (u.get('url') or '-') + '] ' + cwe + ' instancias=' + str(u.get('instancias', 1)))}")
+    if len(dast) > MAX_ANOTACIONES:
+        print(f"::warning::… y {len(dast) - MAX_ANOTACIONES} hallazgo(s) DAST más en el artefacto devsecops-reporte")
+
+
 def anotar_bloqueantes(bloqueantes) -> None:
     orden = sorted(bloqueantes, key=lambda x: -RANGO[x["severidad"]])
     for h in orden[:MAX_ANOTACIONES]:
@@ -529,6 +542,8 @@ def main() -> int:
     for av in avisos:
         print(f"::warning::{escapar_msg(av)}")
     anotar_bloqueantes(bloqueantes)
+    if a.scope in ("dast", "all"):
+        anotar_dast(hallazgos)
     if bloqueantes:
         print(f"::error::Gate de seguridad bloqueado: {len(bloqueantes)} hallazgo(s) >= {umbral}")
     return 1 if (bloqueantes and a.enforce) else 0

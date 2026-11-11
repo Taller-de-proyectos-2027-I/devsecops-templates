@@ -8,6 +8,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      mantener_staging:
+        description: "Modo demostración: dejar el staging encendido (consume créditos)"
+        type: boolean
+        default: false
 
 # Un solo pipeline por rama a la vez (evita dos despliegues simultáneos a staging)
 concurrency:
@@ -33,12 +38,13 @@ jobs:
       dockerfile: Dockerfile
       # Despliegue solo en push a main y cuando AWS ya está configurado (variable AWS_ROLE_ARN);
       # en PR corre únicamente la etapa de integración
-      deploy: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AWS_ROLE_ARN != '' }}
+      deploy: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && vars.AWS_ROLE_ARN != '' }}
       aws-region: us-east-2
       aws-role-arn: ${{ vars.AWS_ROLE_ARN }}
       ecr-repository: taller/g01
       tf-state-bucket: ${{ vars.TF_STATE_BUCKET }}
-      ephemeral-staging: true
+      # Siempre efímero, salvo en una ejecución manual con "mantener_staging" marcado
+      ephemeral-staging: ${{ !(github.event_name == 'workflow_dispatch' && inputs.mantener_staging) }}
       health-path: /actuator/health
       openapi-path: /v3/api-docs
       promote: true
