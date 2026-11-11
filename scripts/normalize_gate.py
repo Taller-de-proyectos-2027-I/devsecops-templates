@@ -95,8 +95,11 @@ def ruta_relativa(uri):
         return uri
     ruta = uri[7:] if uri.startswith("file://") else uri
     base = os.getcwd().rstrip("/") + "/"
-    if ruta.startswith(base):
-        ruta = ruta[len(base):]
+    # Algunas herramientas (Checkov) omiten la "/" inicial de la ruta absoluta
+    for prefijo in (base, base.lstrip("/")):
+        if prefijo and ruta.startswith(prefijo):
+            ruta = ruta[len(prefijo):]
+            break
     return ruta[2:] if ruta.startswith("./") else ruta
 
 
@@ -488,7 +491,7 @@ def reporte_html(salida, metricas, avisos) -> str:
     out.append("</table>")
     if avisos:
         out.append("<h2>Avisos</h2><ul>" + "".join(f"<li>{e(a)}</li>" for a in avisos) + "</ul>")
-    fuentes = ", ".join(f"{e(f['herramienta'])} ({f['hallazgos']})" for f in salida.get("fuentes", []))
+    fuentes = ", ".join(f"{e(f['herramienta'])} · {e(f['archivo'])} ({f['hallazgos']})" for f in salida.get("fuentes", []))
     out.append(f"<p><small>Herramientas analizadas: {fuentes or '-'}. Datos completos en hallazgos.json.</small></p>")
     out.append("</font></body></html>")
     return "\n".join(out)
