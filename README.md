@@ -120,6 +120,7 @@ Un microservicio adicional se cubre con un segundo job en el workflow del grupo 
 ## Contrato de datos (insumo para líderes y para el agente de IA)
 
 Cada ejecución publica el artefacto **`devsecops-reporte`** (90 días) con:
+- **`reporte.html`:** reporte legible para personas: resultado del gate, hallazgos abiertos ordenados por severidad, riesgos aceptados con su justificación y métricas. En Jenkins: *Build Artifacts › devsecops-reporte › reporte*.html*.
 - **`hallazgos.json`:** contexto de la ejecución, resultado del gate y la lista de hallazgos normalizados (`herramienta`, `categoria`, `etapa`, `severidad`, `cwe`, `cve`, `ubicacion`, `estado`, `supresion`, `bloquea`, `fecha_commit`, `fecha_deteccion`…). El esquema completo está en `schema/hallazgo.schema.json`.
 - **`metricas.json`:** KLOC, conteo por severidad y categoría, densidad, tiempo commit→detección y overhead por job.
 - **`sbom.cdx.json`:** inventario de dependencias (CycloneDX).

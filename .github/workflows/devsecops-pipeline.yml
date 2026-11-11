@@ -676,7 +676,7 @@ jobs:
           set +e
           python3 .devsecops-templates/scripts/normalize_gate.py \
             --reports reports --scope all --fail-on "$FAIL_ON" --app-dir "$APP_DIR" \
-            --jobs-json jobs.json --out hallazgos.json --metrics-out metricas.json --enforce
+            --jobs-json jobs.json --out hallazgos.json --metrics-out metricas.json --html reporte.html --enforce
           CODE=$?
           set -e
           if [ $CODE -eq 0 ]; then echo "gate=aprobado" >> "$GITHUB_OUTPUT"; else echo "gate=bloqueado" >> "$GITHUB_OUTPUT"; fi
@@ -686,6 +686,7 @@ jobs:
         with:
           name: devsecops-reporte
           path: |
+            reporte.html
             hallazgos.json
             metricas.json
             reports/sbom.cdx.json
