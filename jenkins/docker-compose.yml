@@ -1,0 +1,26 @@
+# Jenkins local para el prototipo (PC de desarrollo) y, más adelante, la máquina de la universidad.
+# Uso:  copiar .env.example a .env, completar valores y ejecutar:  docker compose up -d --build
+services:
+  jenkins:
+    build: .
+    container_name: jenkins          # los pipelines usan --volumes-from jenkins
+    restart: unless-stopped
+    user: root                       # PROTOTIPO: acceso al socket de Docker Desktop (ver README, sección Seguridad)
+    ports:
+      - "127.0.0.1:8080:8080"        # solo accesible desde esta PC
+    env_file: .env
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+      - m2_cache:/root/.m2           # caché de Maven entre ejecuciones
+      - trivy_cache:/root/.cache/trivy  # base de vulnerabilidades de Trivy
+    networks: [devsecops]
+
+volumes:
+  jenkins_home:
+  m2_cache:
+  trivy_cache:
+
+networks:
+  devsecops:
+    name: devsecops
