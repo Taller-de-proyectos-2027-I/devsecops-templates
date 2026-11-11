@@ -95,8 +95,11 @@ def ruta_relativa(uri):
         return uri
     ruta = uri[7:] if uri.startswith("file://") else uri
     base = os.getcwd().rstrip("/") + "/"
-    if ruta.startswith(base):
-        ruta = ruta[len(base):]
+    # Algunas herramientas (Checkov) omiten la "/" inicial de la ruta absoluta
+    for prefijo in (base, base.lstrip("/")):
+        if prefijo and ruta.startswith(prefijo):
+            ruta = ruta[len(prefijo):]
+            break
     return ruta[2:] if ruta.startswith("./") else ruta
 
 
@@ -398,6 +401,103 @@ def resumen_md(hallazgos, umbral, bloqueantes, metricas, avisos, alcance) -> str
 
 
 # --------------------------------------------------------------------------- #
+# Reporte HTML legible (Jenkins y Actions). Usa atributos HTML además de CSS para
+# verse bien incluso donde la política de seguridad bloquea estilos (Jenkins).
+# --------------------------------------------------------------------------- #
+COLOR_SEV = {"CRITICAL": ("#7B0000", "#FFFFFF"), "HIGH": ("#C00000", "#FFFFFF"),
+             "MEDIUM": ("#F4B183", "#000000"), "LOW": ("#FFF2CC", "#000000"), "INFO": ("#E7E6E6", "#000000")}
+NOMBRE_ALCANCE = {"ci": "Integración", "image": "Imagen", "dast": "DAST", "all": "Global"}
+
+
+def reporte_html(salida, metricas, avisos) -> str:
+    from html import escape as e
+
+    def celda_sev(sev):
+        bg, fg = COLOR_SEV.get(sev, ("#FFFFFF", "#000000"))
+        return f'<td bgcolor="{bg}" style="background:{bg};color:{fg}"><font color="{fg}"><b>{e(sev)}</b></font></td>'
+
+    def ubic(h):
+        u = h.get("ubicacion") or {}
+        if u.get("url"):
+            return e(u["url"])
+        return e(f"{u.get('archivo') or '-'}" + (f":{u['linea']}" if u.get("linea") else ""))
+
+    hs = salida["hallazgos"]
+    abiertos = sorted([h for h in hs if h["estado"] == "abierto"], key=lambda x: (-RANGO[x["severidad"]], x["herramienta"]))
+    suprimidos = [h for h in hs if h["estado"] == "suprimido"]
+    gate = salida["gate"]
+    ok = gate["resultado"] == "aprobado"
+    alc = NOMBRE_ALCANCE.get(salida.get("alcance"), salida.get("alcance"))
+    tabla = 'border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;width:100%"'
+    out = ['<!DOCTYPE html><html lang="es"><head><meta charset="utf-8">',
+           f"<title>Reporte DevSecOps · {e(str(salida.get('repo') or ''))}</title>",
+           "<style>body{font-family:Arial,Helvetica,sans-serif;margin:24px;color:#1A1A1A}"
+           "th{background:#D9E2F3;text-align:left}td,th{border:1px solid #BFBFBF;vertical-align:top;font-size:13px}"
+           "h1{color:#1F3864;font-size:22px}h2{color:#2E75B6;font-size:17px;margin-top:28px}</style></head>",
+           '<body><font face="Arial">',
+           f"<h1>Reporte DevSecOps · {alc}</h1>",
+           f"<p>Repositorio <b>{e(str(salida.get('repo') or '-'))}</b> · grupo <b>{e(str(salida.get('grupo') or '-'))}</b>"
+           f" · rama <b>{e(str(salida.get('rama') or '-'))}</b> · commit <code>{e(str(salida.get('commit') or '-')[:12])}</code>"
+           f" · {e(str(salida.get('fecha_deteccion') or ''))}</p>"]
+    bg = "#E2EFDA" if ok else "#F8CECC"
+    out.append(f'<table {tabla}><tr><td bgcolor="{bg}" style="background:{bg};font-size:16px">'
+               f"<b>Gate: {'✅ APROBADO' if ok else '❌ BLOQUEADO'}</b> · bloquea severidad <b>{e(gate['umbral'])}</b> o superior · "
+               f"abiertos <b>{len(abiertos)}</b> · bloqueantes <b>{gate['bloqueantes']}</b> · suprimidos <b>{len(suprimidos)}</b>"
+               "</td></tr></table>")
+
+    cats = sorted({h["categoria"] for h in hs})
+    if cats:
+        out.append(f"<h2>Resumen por categoría (hallazgos abiertos)</h2><table {tabla}><tr><th>Categoría</th>"
+                   + "".join(f"<th>{s}</th>" for s in reversed(SEVERIDADES)) + "</tr>")
+        for c in cats:
+            fila = "".join(f"<td>{sum(1 for h in abiertos if h['categoria'] == c and h['severidad'] == s)}</td>"
+                           for s in reversed(SEVERIDADES))
+            out.append(f"<tr><td>{e(c)}</td>{fila}</tr>")
+        out.append("</table>")
+
+    out.append(f"<h2>Hallazgos abiertos ({len(abiertos)})</h2>")
+    if abiertos:
+        out.append(f"<table {tabla}><tr><th>Severidad</th><th>Herramienta</th><th>Hallazgo</th><th>Ubicación</th>"
+                   "<th>CWE / CVE</th><th>¿Bloquea?</th><th>id</th></tr>")
+        for h in abiertos:
+            ref = ", ".join(h.get("cwe") or []) + ((" · " if h.get("cwe") else "") + h["cve"] if h.get("cve") else "")
+            out.append(f"<tr>{celda_sev(h['severidad'])}<td>{e(h['herramienta'])}<br><small>{e(h['regla'])}</small></td>"
+                       f"<td>{e(h['titulo'])}</td><td><small>{ubic(h)}</small></td><td>{e(ref) or '-'}</td>"
+                       f"<td>{'<b>Sí</b>' if h.get('bloquea') else 'No'}</td><td><code>{e(h['id'])}</code></td></tr>")
+        out.append("</table>")
+    else:
+        out.append("<p>Sin hallazgos abiertos.</p>")
+
+    if suprimidos:
+        out.append(f"<h2>Riesgos aceptados / suprimidos ({len(suprimidos)})</h2><table {tabla}><tr><th>Severidad</th>"
+                   "<th>Herramienta</th><th>Hallazgo</th><th>Ubicación</th><th>Justificación</th><th>Aprobado por</th><th>Vence</th></tr>")
+        for h in suprimidos:
+            sp = h.get("supresion") or {}
+            out.append(f"<tr>{celda_sev(h['severidad'])}<td>{e(h['herramienta'])}<br><small>{e(h['regla'])}</small></td>"
+                       f"<td>{e(h['titulo'])}</td><td><small>{ubic(h)}</small></td>"
+                       f"<td>{e(str(sp.get('justificacion') or '-'))}</td><td>{e(str(sp.get('aprobado_por') or sp.get('origen') or '-'))}</td>"
+                       f"<td>{e(str(sp.get('expira') or '-'))}</td></tr>")
+        out.append("</table>")
+
+    out.append(f"<h2>Métricas</h2><table {tabla}>")
+    filas = [("KLOC analizadas", metricas.get("kloc")),
+             ("Densidad (abiertos / KLOC)", metricas.get("densidad_vulnerabilidades")),
+             ("Tiempo commit → detección (min)", metricas.get("tiempo_deteccion_min"))]
+    ov = metricas.get("overhead") or {}
+    if ov.get("porcentaje_overhead") is not None:
+        filas.append(("Overhead de seguridad (%)", ov["porcentaje_overhead"]))
+    for k, v in filas:
+        out.append(f"<tr><th>{e(k)}</th><td>{e(str(v if v is not None else '-'))}</td></tr>")
+    out.append("</table>")
+    if avisos:
+        out.append("<h2>Avisos</h2><ul>" + "".join(f"<li>{e(a)}</li>" for a in avisos) + "</ul>")
+    fuentes = ", ".join(f"{e(f['herramienta'])} · {e(f['archivo'])} ({f['hallazgos']})" for f in salida.get("fuentes", []))
+    out.append(f"<p><small>Herramientas analizadas: {fuentes or '-'}. Datos completos en hallazgos.json.</small></p>")
+    out.append("</font></body></html>")
+    return "\n".join(out)
+
+
+# --------------------------------------------------------------------------- #
 # Anotaciones de GitHub (se ven en el PR, en la pestaña "Files changed" y en el run)
 # --------------------------------------------------------------------------- #
 MAX_ANOTACIONES = 8  # GitHub muestra hasta 10 anotaciones de error por paso (+ "y más" + resumen)
@@ -452,6 +552,7 @@ def main() -> int:
     ap.add_argument("--out", default="hallazgos.json")
     ap.add_argument("--metrics-out", default="metricas.json")
     ap.add_argument("--summary", default=os.environ.get("GITHUB_STEP_SUMMARY"))
+    ap.add_argument("--html", help="Ruta del reporte HTML legible (opcional)")
     ap.add_argument("--enforce", action="store_true", help="Salir con 1 si el gate bloquea")
     a = ap.parse_args()
 
@@ -551,6 +652,8 @@ def main() -> int:
     Path(a.metrics_out).write_text(json.dumps(metricas, ensure_ascii=False, indent=2), encoding="utf-8")
 
     md = resumen_md(hallazgos, umbral, bloqueantes, metricas, avisos, a.scope)
+    if a.html:
+        Path(a.html).write_text(reporte_html(salida, metricas, avisos), encoding="utf-8")
     if a.summary:
         with open(a.summary, "a", encoding="utf-8") as f:
             f.write(md)

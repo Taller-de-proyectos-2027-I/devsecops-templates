@@ -157,7 +157,7 @@ def call(Map cfg = [:]) {
                         python3 "$TPL/scripts/normalize_gate.py" --reports "$REPORTS" --scope ci --fail-on "$FAIL_ON" \
                           --app-dir "$APP_DIR" --suppressions .devsecops/suppressions.yml \
                           --out "$REPORTS/hallazgos-ci.json" --metrics-out "$REPORTS/metricas-ci.json" \
-                          --summary "$REPORTS/resumen-ci.md" --enforce
+                          --summary "$REPORTS/resumen-ci.md" --html "$REPORTS/reporte-ci.html" --enforce
                     '''
                 }
             }
@@ -174,7 +174,7 @@ def call(Map cfg = [:]) {
                         python3 "$TPL/scripts/normalize_gate.py" --reports "$REPORTS" --scope image --fail-on "$FAIL_ON" \
                           --app-dir "$APP_DIR" --suppressions .devsecops/suppressions.yml \
                           --out "$REPORTS/hallazgos-image.json" --metrics-out "$REPORTS/metricas-image.json" \
-                          --summary "$REPORTS/resumen-image.md" --enforce
+                          --summary "$REPORTS/resumen-image.md" --html "$REPORTS/reporte-imagen.html" --enforce
                     '''
                 }
             }
@@ -225,7 +225,7 @@ def call(Map cfg = [:]) {
                         python3 "$TPL/scripts/normalize_gate.py" --reports "$REPORTS" --scope all --fail-on "$FAIL_ON" \
                           --app-dir "$APP_DIR" --suppressions .devsecops/suppressions.yml \
                           --out "$REPORTS/hallazgos.json" --metrics-out "$REPORTS/metricas.json" \
-                          --summary "$REPORTS/resumen.md" --enforce
+                          --summary "$REPORTS/resumen.md" --html "$REPORTS/reporte.html" --enforce
                     '''
                 }
             }
@@ -245,7 +245,7 @@ def call(Map cfg = [:]) {
             always {
                 sh '''
                     mkdir -p devsecops-reporte
-                    cp "$REPORTS"/*.json "$REPORTS"/*.sarif "$REPORTS"/*.md devsecops-reporte/ 2>/dev/null || true
+                    cp "$REPORTS"/*.json "$REPORTS"/*.sarif "$REPORTS"/*.md "$REPORTS"/*.html devsecops-reporte/ 2>/dev/null || true
                     cat devsecops-reporte/resumen*.md 2>/dev/null || true
                     # Resumen de una línea para la página del build
                     python3 - <<'PY' > devsecops-reporte/descripcion.txt || true
@@ -262,7 +262,7 @@ for alcance, nombre in (("ci", "Integración"), ("image", "Imagen"), ("", "Globa
                   f" (abiertos {sum(1 for h in hs if h['estado'] == 'abierto')},"
                   f" bloqueantes {d['gate']['bloqueantes']},"
                   f" suprimidos {sum(1 for h in hs if h['estado'] == 'suprimido')})")
-print(" · ".join(partes) if partes else "Sin reporte (el pipeline falló antes del gate)")
+print((" · ".join(partes) + " · Detalle: Build Artifacts › devsecops-reporte › reporte*.html") if partes else "Sin reporte (el pipeline falló antes del gate)")
 PY
                 '''
                 script {
