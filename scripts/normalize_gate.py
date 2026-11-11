@@ -84,6 +84,22 @@ def severidad_por_cvss(valor) -> str | None:
     return "INFO"
 
 
+def ruta_relativa(uri):
+    """Normaliza la ruta de un hallazgo a relativa al repositorio.
+
+    Cada orquestador ejecuta los escáneres en rutas distintas (GitHub Actions:
+    relativas; Jenkins: /var/jenkins_home/workspace/<job>/...). Sin esto, las
+    supresiones y las huellas (id) no coinciden entre orquestadores.
+    """
+    if not uri:
+        return uri
+    ruta = uri[7:] if uri.startswith("file://") else uri
+    base = os.getcwd().rstrip("/") + "/"
+    if ruta.startswith(base):
+        ruta = ruta[len(base):]
+    return ruta[2:] if ruta.startswith("./") else ruta
+
+
 # --------------------------------------------------------------------------- #
 # Lectores
 # --------------------------------------------------------------------------- #
@@ -148,7 +164,7 @@ def leer_sarif(ruta: Path, herramienta: str, categoria: str, etapa: str, sev_def
             locs = res.get("locations") or []
             if locs:
                 pl = locs[0].get("physicalLocation") or {}
-                archivo = (pl.get("artifactLocation") or {}).get("uri")
+                archivo = ruta_relativa((pl.get("artifactLocation") or {}).get("uri"))
                 linea = (pl.get("region") or {}).get("startLine")
 
             titulo = ((res.get("message") or {}).get("text")
