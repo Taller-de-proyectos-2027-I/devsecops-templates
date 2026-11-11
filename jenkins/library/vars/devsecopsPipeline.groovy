@@ -247,8 +247,45 @@ def call(Map cfg = [:]) {
                     mkdir -p devsecops-reporte
                     cp "$REPORTS"/*.json "$REPORTS"/*.sarif "$REPORTS"/*.md devsecops-reporte/ 2>/dev/null || true
                     cat devsecops-reporte/resumen*.md 2>/dev/null || true
+                    # Resumen de una línea para la página del build
+                    python3 - <<'PY' > devsecops-reporte/descripcion.txt || true
+import json, glob, os
+partes = []
+for alcance, nombre in (("ci", "Integración"), ("image", "Imagen"), ("", "Global")):
+    f = f"devsecops-reporte/hallazgos{'-' + alcance if alcance else ''}.json"
+    if not os.path.exists(f):
+        continue
+    d = json.load(open(f))
+    hs = d.get("hallazgos", [])
+    ok = d["gate"]["resultado"] == "aprobado"
+    partes.append(f"{nombre}: {'APROBADO' if ok else 'BLOQUEADO'}"
+                  f" (abiertos {sum(1 for h in hs if h['estado'] == 'abierto')},"
+                  f" bloqueantes {d['gate']['bloqueantes']},"
+                  f" suprimidos {sum(1 for h in hs if h['estado'] == 'suprimido')})")
+print(" · ".join(partes) if partes else "Sin reporte (el pipeline falló antes del gate)")
+PY
                 '''
+                script {
+                    def desc = fileExists('devsecops-reporte/descripcion.txt') ? readFile('devsecops-reporte/descripcion.txt').trim() : ''
+                    if (env.BRANCH_NAME == 'main' && sh(script: 'docker image inspect "devsecops/$GRUPO:approved-$GIT_COMMIT" >/dev/null 2>&1', returnStatus: true) == 0) {
+                        desc += ' · Imagen aprobada'
+                    }
+                    currentBuild.description = desc
+                }
                 archiveArtifacts artifacts: 'devsecops-reporte/**', allowEmptyArchive: true, fingerprint: false
+                script {
+                    if (env.BRANCH_NAME == 'main') {
+                        // Limpieza: conservar solo las 5 imágenes más recientes del grupo (y sus etiquetas approved-)
+                        sh '''
+                            docker images "devsecops/$GRUPO" --format '{{.Tag}}' | grep -v '^approved-' | tail -n +6 | while read -r t; do
+                              docker rmi "devsecops/$GRUPO:approved-$t" >/dev/null 2>&1 || true
+                              docker rmi "devsecops/$GRUPO:$t" >/dev/null 2>&1 || true
+                            done
+                            docker image prune -f >/dev/null
+                            echo "Imágenes del grupo conservadas:"; docker images "devsecops/$GRUPO" --format '  {{.Tag}}  {{.Size}}'
+                        '''
+                    }
+                }
             }
         }
     }
