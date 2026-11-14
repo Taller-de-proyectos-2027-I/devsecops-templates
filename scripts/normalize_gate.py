@@ -495,7 +495,7 @@ def resumen_md(hallazgos, umbral, bloqueantes, metricas, avisos, alcance, salida
             md.append(f"- Mínimo exigido: {cal['cobertura_minima']:g} %")
         if son:
             md.append(f"- SonarQube: quality gate **{son.get('quality_gate')}** ({cal.get('sonar_gate')}) · "
-                      f"cobertura código nuevo {son.get('cobertura_codigo_nuevo')} % · {son.get('panel')}")
+                      f"cobertura código nuevo {son.get('cobertura_codigo_nuevo') if son.get('cobertura_codigo_nuevo') is not None else '-'} % · {son.get('panel')}")
         for m in motivos:
             md.append(f"- ❌ {m}")
         md.append("")
@@ -589,8 +589,9 @@ def reporte_html(salida, metricas, avisos) -> str:
             panel = son.get("panel") or ""
             out.append(f"<tr><th>SonarQube · quality gate</th><td><b>{e(str(son.get('quality_gate')))}</b> "
                        f"({e(cal.get('sonar_gate') or '')}) · <a href=\"{e(panel)}\">ver panel</a></td></tr>")
-            out.append(f"<tr><th>SonarQube · cobertura (global / código nuevo)</th><td>{e(str(son.get('cobertura')))} % / "
-                       f"{e(str(son.get('cobertura_codigo_nuevo')))} %</td></tr>")
+            pct = lambda v: f"{v:g} %" if isinstance(v, (int, float)) else "- (sin código nuevo)"
+            out.append(f"<tr><th>SonarQube · cobertura (global / código nuevo)</th><td>{e(pct(son.get('cobertura')))} / "
+                       f"{e(pct(son.get('cobertura_codigo_nuevo')))}</td></tr>")
             fallidas = [c for c in son.get("condiciones") or [] if c.get("status") == "ERROR"]
             if fallidas:
                 out.append("<tr><th>Condiciones no cumplidas</th><td>" + "<br>".join(
