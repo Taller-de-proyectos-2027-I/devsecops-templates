@@ -17,6 +17,7 @@ USER jenkins
 COPY plugins.txt /usr/share/jenkins/ref/plugins.txt
 RUN jenkins-plugin-cli --plugin-file /usr/share/jenkins/ref/plugins.txt
 
-COPY casc.yaml /var/jenkins_home/casc.yaml
-ENV CASC_JENKINS_CONFIG=/var/jenkins_home/casc.yaml \
+# Fuera de JENKINS_HOME (volumen persistente): así cada build de la imagen trae la configuración nueva
+COPY casc.yaml /usr/share/jenkins/casc.yaml
+ENV CASC_JENKINS_CONFIG=/usr/share/jenkins/casc.yaml \
     JAVA_OPTS="-Djenkins.install.runSetupWizard=false"
