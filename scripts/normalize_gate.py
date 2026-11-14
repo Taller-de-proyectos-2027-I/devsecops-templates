@@ -295,6 +295,30 @@ def leer_sonar_resumen(reports: str):
     return None
 
 
+def leer_pruebas(reports: str):
+    """Resultados de pruebas a partir de los TEST-*.xml de Surefire/Failsafe (formato JUnit)."""
+    import xml.etree.ElementTree as ET
+    archivos = sorted(Path(reports).rglob("TEST-*.xml"))
+    if not archivos:
+        return None
+    t = {"total": 0, "fallidas": 0, "errores": 0, "omitidas": 0, "detalle": []}
+    for ruta in archivos:
+        try:
+            raiz = ET.parse(ruta).getroot()
+        except (ET.ParseError, OSError):
+            continue
+        suites = [raiz] if raiz.tag == "testsuite" else raiz.findall("testsuite")
+        for su in suites:
+            t["total"] += int(su.get("tests", 0))
+            t["fallidas"] += int(su.get("failures", 0))
+            t["errores"] += int(su.get("errors", 0))
+            t["omitidas"] += int(su.get("skipped", 0))
+            for caso in su.findall("testcase"):
+                if caso.find("failure") is not None or caso.find("error") is not None:
+                    t["detalle"].append(f"{(caso.get('classname') or '').split('.')[-1]}.{caso.get('name')}")
+    return t
+
+
 def leer_cobertura(reports: str):
     """Cobertura de líneas a partir de los jacoco*.xml (suma de todos los módulos)."""
     import xml.etree.ElementTree as ET
@@ -460,8 +484,11 @@ def resumen_md(hallazgos, umbral, bloqueantes, metricas, avisos, alcance, salida
         md.append("")
     cal = (salida or {}).get("calidad")
     if cal:
-        cob, son = cal.get("cobertura"), cal.get("sonar")
+        cob, son, pr = cal.get("cobertura"), cal.get("sonar"), cal.get("pruebas")
         md += ["### Calidad (QA)"]
+        if pr:
+            md.append(f"- Pruebas: **{pr['total'] - pr['fallidas'] - pr['errores'] - pr['omitidas']} OK** de {pr['total']}"
+                      f" · fallidas {pr['fallidas'] + pr['errores']} · omitidas {pr['omitidas']}")
         md.append(f"- Cobertura de líneas (JaCoCo): **{cob['porcentaje']:g} %** "
                   f"({cob['lineas_cubiertas']}/{cob['lineas_totales']})" if cob else "- Cobertura de líneas: sin reporte")
         if cal.get("cobertura_minima"):
@@ -547,8 +574,12 @@ def reporte_html(salida, metricas, avisos) -> str:
 
     cal = salida.get("calidad")
     if cal:
-        cob, son = cal.get("cobertura"), cal.get("sonar")
+        cob, son, pr = cal.get("cobertura"), cal.get("sonar"), cal.get("pruebas")
         out.append(f"<h2>Calidad (QA)</h2><table {tabla}>")
+        if pr:
+            ok_pr = pr["total"] - pr["fallidas"] - pr["errores"] - pr["omitidas"]
+            out.append(f"<tr><th>Pruebas</th><td><b>{ok_pr} correctas</b> de {pr['total']} · fallidas "
+                       f"{pr['fallidas'] + pr['errores']} · omitidas {pr['omitidas']}</td></tr>")
         out.append("<tr><th>Cobertura de líneas (JaCoCo)</th><td>"
                    + (f"<b>{cob['porcentaje']:g} %</b> ({cob['lineas_cubiertas']} de {cob['lineas_totales']} líneas)"
                       if cob else "sin reporte") + "</td></tr>")
@@ -745,8 +776,12 @@ def main() -> int:
     if a.scope in ("ci", "all"):
         cobertura = leer_cobertura(a.reports)
         sonar = leer_sonar_resumen(a.reports)
-        calidad = {"cobertura": cobertura, "cobertura_minima": a.min_coverage or None,
+        pruebas = leer_pruebas(a.reports)
+        calidad = {"pruebas": pruebas, "cobertura": cobertura, "cobertura_minima": a.min_coverage or None,
                    "sonar": sonar, "sonar_gate": a.sonar_gate}
+        if pruebas and (pruebas["fallidas"] or pruebas["errores"]):
+            motivos.append(f"{pruebas['fallidas'] + pruebas['errores']} prueba(s) fallida(s) de {pruebas['total']}: "
+                           + ", ".join(pruebas["detalle"][:5]))
         if a.min_coverage > 0:
             if cobertura is None:
                 motivos.append(f"No hay reporte de cobertura (jacoco.xml) y se exige {a.min_coverage:g} %")
@@ -792,6 +827,7 @@ def main() -> int:
         "densidad_vulnerabilidades": round(len(abiertos) / kloc, 3) if kloc else None,
         "tiempo_deteccion_min": t_det,
         "overhead": overhead_desde_jobs(a.jobs_json),
+        "pruebas": {k: v for k, v in ((calidad or {}).get("pruebas") or {}).items() if k != "detalle"} or None,
         "cobertura": ((calidad or {}).get("cobertura") or {}).get("porcentaje"),
         "cobertura_minima": (calidad or {}).get("cobertura_minima"),
         "sonar_quality_gate": ((calidad or {}).get("sonar") or {}).get("quality_gate"),

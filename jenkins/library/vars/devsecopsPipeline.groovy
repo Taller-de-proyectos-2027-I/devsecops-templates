@@ -91,9 +91,14 @@ def call(Map cfg = [:]) {
                 steps {
                     sh '''
                         docker run --rm --volumes-from jenkins -w "$WORKSPACE/$APP_DIR" "$IMG_MAVEN" \
-                          sh -c "mvn -B -ntp org.jacoco:jacoco-maven-plugin:$JACOCO_VERSION:prepare-agent verify \
+                          sh -c "mvn -B -ntp -Dmaven.test.failure.ignore=true org.jacoco:jacoco-maven-plugin:$JACOCO_VERSION:prepare-agent verify \
                                    org.jacoco:jacoco-maven-plugin:$JACOCO_VERSION:report \
                                  && mvn -B -ntp -q dependency:build-classpath -Dmdep.outputFile=.devsecops-cp.txt"
+                        # Resultados de pruebas para el gate (una prueba fallida bloquea en el gate,
+                        # así los escáneres de seguridad igual corren y se ven en el reporte)
+                        mkdir -p "$REPORTS/pruebas"
+                        find "$WORKSPACE/$APP_DIR" \\( -path '*/surefire-reports/TEST-*.xml' -o -path '*/failsafe-reports/TEST-*.xml' \\) \
+                          -exec cp {} "$REPORTS/pruebas/" \\;
                         # Cobertura para el gate (un jacoco-N.xml por módulo)
                         n=0; find "$WORKSPACE/$APP_DIR" -path '*/site/jacoco/jacoco.xml' -not -path '*/node_modules/*' | while read -r f; do
                           n=$((n+1)); cp "$f" "$REPORTS/jacoco-$n.xml"
