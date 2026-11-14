@@ -26,13 +26,10 @@ def call(Map cfg = [:]) {
         templatesRef  : '',                // vacío = DEVSECOPS_LIB_REF del .env
         // Calidad (fase 2). El umbral de cobertura lo define el QA líder del grupo.
         coberturaMinima : 60,              // % de líneas (JaCoCo); 0 = no se exige
-        sonar           : (env.SONAR_ORG ?: '') != '',   // activo si el .env de Jenkins tiene SONAR_ORG
+        sonar           : null,            // null = automático: activo si el .env de Jenkins define SONAR_ORG
         sonarProjectKey : '',              // vacío = <organización GitHub>_<repositorio>
         sonarGate       : 'informar',      // informar | bloquear (quality gate de Sonar en ERROR)
     ] + cfg
-    // Sonar cubre el SAST: Semgrep y SpotBugs quedan solo si Sonar no está activo (o si se piden)
-    if (!cfg.containsKey('semgrep'))  { c.semgrep  = !c.sonar }
-    if (!cfg.containsKey('spotbugs')) { c.spotbugs = !c.sonar }
 
     pipeline {
         agent any
@@ -83,6 +80,16 @@ def call(Map cfg = [:]) {
                         git clone -q --depth 1 -b "$REF" "https://github.com/$GITHUB_ORG/devsecops-templates.git" "$TPL"
                         echo "Plantilla devsecops-templates@$REF"
                     '''
+                    script {
+                        // Las variables del .env de Jenkins solo se ven dentro del nodo, por eso se decide aquí.
+                        if (c.sonar == null) {
+                            c.sonar = sh(script: 'printf %s "$SONAR_ORG"', returnStdout: true).trim() != ''
+                        }
+                        // Sonar cubre el SAST: Semgrep y SpotBugs corren solo si Sonar no está activo (o si se piden)
+                        if (!cfg.containsKey('semgrep'))  { c.semgrep  = !c.sonar }
+                        if (!cfg.containsKey('spotbugs')) { c.spotbugs = !c.sonar }
+                        echo "SonarQube Cloud: ${c.sonar ? 'activo' : 'inactivo (falta SONAR_ORG en el .env de Jenkins)'} · Semgrep: ${c.semgrep} · SpotBugs: ${c.spotbugs}"
+                    }
                 }
             }
 
