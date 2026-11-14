@@ -31,6 +31,11 @@ credentials:
               description: "Token de GitHub (lectura de repos y estado de commits)"
               username: "${GITHUB_USER}"
               password: "${GITHUB_TOKEN}"
+          - string:
+              scope: GLOBAL
+              id: "sonar-token"
+              description: "Token de SonarQube Cloud (análisis y lectura de resultados)"
+              secret: "${SONAR_TOKEN:-sin-configurar}"
 
 unclassified:
   location:
