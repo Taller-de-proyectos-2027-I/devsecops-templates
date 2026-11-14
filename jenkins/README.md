@@ -1,6 +1,6 @@
 # Jenkins local (prototipo)
 
-Orquestador alternativo a GitHub Actions, pedido por el docente. Usa **las mismas herramientas, el mismo `normalize_gate.py` y el mismo contrato de datos**. Corre en Docker en una PC (prototipo) y, más adelante, en la máquina de la universidad encendida 24/7. Costo: **USD 0**.
+Orquestador alternativo a GitHub Actions, pedido por el docente. Usa **el mismo `normalize_gate.py` y el mismo contrato de datos** que Actions; desde la fase 2 agrega pruebas, cobertura y SonarQube Cloud. Corre en Docker en una PC (prototipo) y, más adelante, en la máquina de la universidad encendida 24/7. Costo: **USD 0**.
 
 ```
 GitHub ◄──(cada 5 min: ¿commits o PR nuevos?)── Jenkins (Docker, esta PC)
@@ -48,6 +48,28 @@ La configuración (`casc.yaml`) se reaplica en cada inicio, así que los cambios
    ```
 2. En `casc.yaml`, copiar el bloque `multibranchPipelineJob('g00-prueba')` y cambiar el nombre del repositorio.
 3. Ejecutar `docker compose up -d --build`.
+
+## Calidad: pruebas, cobertura y SonarQube Cloud (fase 2)
+El build ejecuta las pruebas (`mvn verify`) con JaCoCo. No hace falta tocar el `pom.xml` del grupo: el pipeline invoca JaCoCo desde la línea de comandos.
+
+- **Pruebas:** si una prueba falla, el build falla. Los resultados se ven en la página del build (*Test Result*).
+- **Cobertura:** el gate exige `coberturaMinima` (por defecto 60 % de líneas). La define el **QA líder** en el `Jenkinsfile` del grupo. El reporte navegable queda en `devsecops-reporte/cobertura/index.html`.
+- **SonarQube Cloud:** reemplaza a Semgrep y SpotBugs como SAST y aporta métricas de calidad. Sus problemas de seguridad entran al mismo gate (HIGH o superior bloquea). Los *security hotspots* aparecen como hallazgos por revisar y no bloquean. El quality gate de Sonar es informativo, salvo `sonarGate: 'bloquear'`.
+- El plan gratuito de SonarQube Cloud analiza **solo `main` y los PR hacia `main`** (por eso la estrategia de ramas es GitHub Flow, ver `docs/estrategia-de-ramas.md`). En otras ramas el paso de Sonar se omite.
+
+```groovy
+@Library('devsecops') _
+devsecopsPipeline(grupo: 'g01', coberturaMinima: 60)   // sonarGate: 'bloquear' para exigir el quality gate de Sonar
+```
+
+### Configurar SonarQube Cloud (una vez por organización)
+1. Entrar a https://sonarcloud.io con la cuenta de GitHub → *Create organization* → importar la organización `Taller-de-proyectos-2027-I` (plan **Free**, repos públicos).
+2. Importar cada repositorio de grupo (*Analyze new project*). Sonar asigna la clave `<organización de GitHub>_<repo>` (por ejemplo `Taller-de-proyectos-2027-I_g00-prueba`), que es la que usa el pipeline; si fuera otra, se indica con `sonarProjectKey`.
+3. En cada proyecto: *Administration → Analysis Method* → **desactivar Automatic Analysis** (el análisis lo hace Jenkins).
+4. *My Account → Security* → generar un token.
+5. En el `.env` de Jenkins: `SONAR_ORG=<clave de la organización en Sonar>` (la parte de la URL después de `/organizations/`) y `SONAR_TOKEN=<token>`. Luego `docker compose up -d --build`.
+
+Sin `SONAR_ORG`, el pipeline sigue funcionando con Semgrep y SpotBugs.
 
 ## Seguridad: diferencias entre el prototipo y la máquina de la universidad
 | Prototipo (esta PC) | Máquina de la universidad |

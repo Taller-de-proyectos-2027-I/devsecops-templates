@@ -24,6 +24,11 @@ def call(Map cfg = [:]) {
         openapiPath   : '/v3/api-docs',
         aprobadores   : 'admin',           // usuarios Jenkins que pueden aprobar la liberación
         templatesRef  : '',                // vacío = DEVSECOPS_LIB_REF del .env
+        // Calidad (fase 2). El umbral de cobertura lo define el QA líder del grupo.
+        coberturaMinima : 60,              // % de líneas (JaCoCo); 0 = no se exige
+        sonar           : null,            // null = automático: activo si el .env de Jenkins define SONAR_ORG
+        sonarProjectKey : '',              // vacío = <organización GitHub>_<repositorio>
+        sonarGate       : 'informar',      // informar | bloquear (quality gate de Sonar en ERROR)
     ] + cfg
 
     pipeline {
@@ -45,6 +50,11 @@ def call(Map cfg = [:]) {
             HEALTH_PATH     = "${c.healthPath}"
             OPENAPI_PATH    = "${c.openapiPath}"
             TEMPLATES_REF   = "${c.templatesRef}"
+            COBERTURA_MIN   = "${c.coberturaMinima}"
+            SONAR_GATE      = "${c.sonarGate}"
+            SONAR_KEY       = "${c.sonarProjectKey}"
+            JACOCO_VERSION  = '0.8.16'
+            SONAR_MAVEN_VERSION = '5.8.0.7211'
             // Versiones fijadas (las mismas que el pipeline de GitHub Actions, fase 1)
             IMG_GITLEAKS = 'ghcr.io/gitleaks/gitleaks:v8.30.0'
             IMG_TRIVY    = 'aquasec/trivy:0.76.1'
@@ -70,6 +80,16 @@ def call(Map cfg = [:]) {
                         git clone -q --depth 1 -b "$REF" "https://github.com/$GITHUB_ORG/devsecops-templates.git" "$TPL"
                         echo "Plantilla devsecops-templates@$REF"
                     '''
+                    script {
+                        // Las variables del .env de Jenkins solo se ven dentro del nodo, por eso se decide aquí.
+                        if (c.sonar == null) {
+                            c.sonar = sh(script: 'printf %s "$SONAR_ORG"', returnStdout: true).trim() != ''
+                        }
+                        // Sonar cubre el SAST: Semgrep y SpotBugs corren solo si Sonar no está activo (o si se piden)
+                        if (!cfg.containsKey('semgrep'))  { c.semgrep  = !c.sonar }
+                        if (!cfg.containsKey('spotbugs')) { c.spotbugs = !c.sonar }
+                        echo "SonarQube Cloud: ${c.sonar ? 'activo' : 'inactivo (falta SONAR_ORG en el .env de Jenkins)'} · Semgrep: ${c.semgrep} · SpotBugs: ${c.spotbugs}"
+                    }
                 }
             }
 
@@ -78,8 +98,24 @@ def call(Map cfg = [:]) {
                 steps {
                     sh '''
                         docker run --rm --volumes-from jenkins -w "$WORKSPACE/$APP_DIR" "$IMG_MAVEN" \
-                          sh -c 'mvn -B -ntp -DskipTests package && mvn -B -ntp -q dependency:build-classpath -Dmdep.outputFile=.devsecops-cp.txt'
+                          sh -c "mvn -B -ntp -Dmaven.test.failure.ignore=true org.jacoco:jacoco-maven-plugin:$JACOCO_VERSION:prepare-agent verify \
+                                   org.jacoco:jacoco-maven-plugin:$JACOCO_VERSION:report \
+                                 && mvn -B -ntp -q dependency:build-classpath -Dmdep.outputFile=.devsecops-cp.txt"
+                        # Resultados de pruebas para el gate (una prueba fallida bloquea en el gate,
+                        # así los escáneres de seguridad igual corren y se ven en el reporte)
+                        mkdir -p "$REPORTS/pruebas"
+                        find "$WORKSPACE/$APP_DIR" \\( -path '*/surefire-reports/TEST-*.xml' -o -path '*/failsafe-reports/TEST-*.xml' \\) \
+                          -exec cp {} "$REPORTS/pruebas/" \\;
+                        # Cobertura para el gate (un jacoco-N.xml por módulo)
+                        n=0; find "$WORKSPACE/$APP_DIR" -path '*/site/jacoco/jacoco.xml' -not -path '*/node_modules/*' | while read -r f; do
+                          n=$((n+1)); cp "$f" "$REPORTS/jacoco-$n.xml"
+                        done
                     '''
+                }
+                post {
+                    always {
+                        junit allowEmptyResults: true, testResults: '**/target/surefire-reports/*.xml, **/target/failsafe-reports/*.xml'
+                    }
                 }
             }
             stage('Escaneos de seguridad') {
@@ -92,7 +128,33 @@ def call(Map cfg = [:]) {
                             '''
                         }
                     }
+                    stage('CAL · SonarQube Cloud') {
+                        // El plan gratuito analiza solo main y los PR hacia main
+                        when { expression { c.sonar && (env.BRANCH_NAME == 'main' || env.CHANGE_TARGET == 'main') } }
+                        steps {
+                            withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+                                sh '''
+                                    REPO="${JOB_NAME%%/*}"
+                                    KEY="${SONAR_KEY:-${GITHUB_ORG}_${REPO}}"   # clave que Sonar asigna al importar desde GitHub
+                                    if [ -n "$CHANGE_ID" ]; then
+                                      ALC="-Dsonar.pullrequest.key=$CHANGE_ID -Dsonar.pullrequest.branch=$CHANGE_BRANCH -Dsonar.pullrequest.base=$CHANGE_TARGET"
+                                    else
+                                      ALC="-Dsonar.branch.name=$BRANCH_NAME"
+                                    fi
+                                    docker run --rm --volumes-from jenkins -e SONAR_TOKEN -w "$WORKSPACE/$APP_DIR" "$IMG_MAVEN" \
+                                      mvn -B -ntp org.sonarsource.scanner.maven:sonar-maven-plugin:$SONAR_MAVEN_VERSION:sonar \
+                                        -Dsonar.organization="$SONAR_ORG" -Dsonar.projectKey="$KEY" \
+                                        ${SONAR_REGION:+-Dsonar.region=$SONAR_REGION} -Dsonar.userHome=/root/.m2/.sonar \
+                                        -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml $ALC
+                                    RT=$(find "$WORKSPACE/$APP_DIR" -path '*/target/sonar/report-task.txt' | head -1)
+                                    python3 "$TPL/scripts/sonar_export.py" --report-task "$RT" --out "$REPORTS/sonar.json" \
+                                      --pull-request "${CHANGE_ID:-}" --branch "$BRANCH_NAME"
+                                '''
+                            }
+                        }
+                    }
                     stage('SEC · Semgrep') {
+                        when { expression { c.semgrep } }
                         steps {
                             sh '''
                                 ARGS=""; for x in $SEMGREP_CONFIGS; do ARGS="$ARGS --config $x"; done
@@ -120,6 +182,7 @@ def call(Map cfg = [:]) {
                         }
                     }
                     stage('SEC · SpotBugs') {
+                        when { expression { c.spotbugs } }
                         steps {
                             sh '''
                                 T="$JENKINS_HOME/tools/spotbugs-$SPOTBUGS_VERSION"
@@ -157,7 +220,7 @@ def call(Map cfg = [:]) {
                         python3 "$TPL/scripts/normalize_gate.py" --reports "$REPORTS" --scope ci --fail-on "$FAIL_ON" \
                           --app-dir "$APP_DIR" --suppressions .devsecops/suppressions.yml \
                           --out "$REPORTS/hallazgos-ci.json" --metrics-out "$REPORTS/metricas-ci.json" \
-                          --summary "$REPORTS/resumen-ci.md" --html "$REPORTS/reporte-ci.html" --enforce
+                          --summary "$REPORTS/resumen-ci.md" --html "$REPORTS/reporte-ci.html" --min-coverage "$COBERTURA_MIN" --sonar-gate "$SONAR_GATE" --enforce
                     '''
                 }
             }
@@ -225,7 +288,7 @@ def call(Map cfg = [:]) {
                         python3 "$TPL/scripts/normalize_gate.py" --reports "$REPORTS" --scope all --fail-on "$FAIL_ON" \
                           --app-dir "$APP_DIR" --suppressions .devsecops/suppressions.yml \
                           --out "$REPORTS/hallazgos.json" --metrics-out "$REPORTS/metricas.json" \
-                          --summary "$REPORTS/resumen.md" --html "$REPORTS/reporte.html" --enforce
+                          --summary "$REPORTS/resumen.md" --html "$REPORTS/reporte.html" --min-coverage "$COBERTURA_MIN" --sonar-gate "$SONAR_GATE" --enforce
                     '''
                 }
             }
@@ -245,7 +308,9 @@ def call(Map cfg = [:]) {
             always {
                 sh '''
                     mkdir -p devsecops-reporte
-                    cp "$REPORTS"/*.json "$REPORTS"/*.sarif "$REPORTS"/*.md "$REPORTS"/*.html devsecops-reporte/ 2>/dev/null || true
+                    cp "$REPORTS"/*.json "$REPORTS"/*.sarif "$REPORTS"/*.md "$REPORTS"/*.html "$REPORTS"/*.xml devsecops-reporte/ 2>/dev/null || true
+                    J=$(find "${APP_DIR:-.}" -path '*/site/jacoco/index.html' -not -path '*/node_modules/*' | head -1)
+                    [ -n "$J" ] && cp -r "$(dirname "$J")" devsecops-reporte/cobertura || true
                     cat devsecops-reporte/resumen*.md 2>/dev/null || true
                     # Resumen de una línea para la página del build
                     python3 - <<'PY' > devsecops-reporte/descripcion.txt || true
@@ -262,6 +327,13 @@ for alcance, nombre in (("ci", "Integración"), ("image", "Imagen"), ("", "Globa
                   f" (abiertos {sum(1 for h in hs if h['estado'] == 'abierto')},"
                   f" bloqueantes {d['gate']['bloqueantes']},"
                   f" suprimidos {sum(1 for h in hs if h['estado'] == 'suprimido')})")
+    if alcance == "ci":
+        cob = ((d.get("calidad") or {}).get("cobertura") or {}).get("porcentaje")
+        son = ((d.get("calidad") or {}).get("sonar") or {}).get("quality_gate")
+        if cob is not None:
+            partes.append(f"Cobertura {cob:g} %")
+        if son:
+            partes.append(f"Sonar {son}")
 print((" · ".join(partes) + " · Detalle: Build Artifacts › devsecops-reporte › reporte*.html") if partes else "Sin reporte (el pipeline falló antes del gate)")
 PY
                 '''

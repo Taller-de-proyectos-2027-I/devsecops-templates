@@ -14,6 +14,8 @@ Entradas soportadas (detectadas por nombre de archivo dentro de --reports):
   trivy-image.sarif   -> categoria=contenedor, etapa=build
   zap-baseline.json   -> categoria=dast,       etapa=pruebas
   zap-api.json        -> categoria=dast,       etapa=pruebas
+  sonar.json          -> categoria=sast,       etapa=integracion  (scripts/sonar_export.py)
+  jacoco*.xml         -> cobertura de pruebas (no son hallazgos; los evalúa --min-coverage)
 
 Solo usa la biblioteca estándar; PyYAML es opcional (para suppressions.yml).
 Código de salida: 0 = gate aprobado, 1 = gate bloqueado (si --enforce), 2 = error.
@@ -46,6 +48,7 @@ FUENTES = {
     "trivy-image.sarif": ("trivy-image", "contenedor", "build", None),
     "zap-baseline.json": ("zap-baseline", "dast", "pruebas", None),
     "zap-api.json": ("zap-api", "dast", "pruebas", None),
+    "sonar.json": ("sonarqube", "sast", "integracion", None),
 }
 
 ETAPAS_POR_ALCANCE = {
@@ -234,6 +237,110 @@ def leer_zap(ruta: Path, herramienta: str, categoria: str, etapa: str, _sev):
     return hallazgos
 
 
+# Severidad de impacto en SonarQube (modo MQR) y severidad clásica (modo estándar)
+SONAR_IMPACTO = {"BLOCKER": "CRITICAL", "HIGH": "HIGH", "MEDIUM": "MEDIUM", "LOW": "LOW", "INFO": "INFO"}
+SONAR_CLASICA = {"BLOCKER": "CRITICAL", "CRITICAL": "HIGH", "MAJOR": "MEDIUM", "MINOR": "LOW", "INFO": "INFO"}
+# Un hotspot no es una vulnerabilidad confirmada: requiere revisión, así que no bloquea con umbral HIGH
+SONAR_HOTSPOT = {"HIGH": "MEDIUM", "MEDIUM": "LOW", "LOW": "LOW"}
+
+
+def leer_sonar(ruta: Path, herramienta: str, categoria: str, etapa: str, _sev):
+    data = json.loads(ruta.read_text(encoding="utf-8") or "{}")
+    proyecto = data.get("proyecto") or ""
+    panel = data.get("panel")
+
+    def archivo_de(componente):
+        comp = componente or ""
+        return comp[len(proyecto) + 1:] if proyecto and comp.startswith(proyecto + ":") else (comp or None)
+
+    hallazgos = []
+    for i in data.get("issues", []) or []:
+        sev_imp = [x.get("severity") for x in i.get("impacts") or [] if x.get("softwareQuality") == "SECURITY"]
+        sev = SONAR_IMPACTO.get(sev_imp[0]) if sev_imp else SONAR_CLASICA.get(i.get("severity"), "MEDIUM")
+        hallazgos.append({
+            "id": huella(herramienta, i.get("key") or ""),
+            "herramienta": herramienta, "categoria": categoria, "etapa": etapa,
+            "regla": i.get("rule") or "sonar",
+            "titulo": (i.get("message") or i.get("rule") or "")[:240],
+            "severidad": sev or "MEDIUM",
+            "cwe": [], "cve": None,
+            "ubicacion": {"archivo": archivo_de(i.get("component")), "linea": i.get("line"), "url": None},
+            "estado": "abierto", "supresion": None,
+        })
+    for hs in data.get("hotspots", []) or []:
+        hallazgos.append({
+            "id": huella(herramienta + "-hotspot", hs.get("key") or ""),
+            "herramienta": herramienta + "-hotspot", "categoria": categoria, "etapa": etapa,
+            "regla": hs.get("ruleKey") or hs.get("securityCategory") or "hotspot",
+            "titulo": ("Revisar (hotspot): " + (hs.get("message") or ""))[:240],
+            "severidad": SONAR_HOTSPOT.get(hs.get("vulnerabilityProbability"), "LOW"),
+            "cwe": [], "cve": None,
+            "ubicacion": {"archivo": archivo_de(hs.get("component")), "linea": hs.get("line"), "url": None},
+            "estado": "abierto", "supresion": None,
+        })
+    return hallazgos
+
+
+def leer_sonar_resumen(reports: str):
+    for ruta in Path(reports).rglob("sonar.json"):
+        try:
+            d = json.loads(ruta.read_text(encoding="utf-8") or "{}")
+        except (json.JSONDecodeError, OSError):
+            return None
+        return {"quality_gate": (d.get("quality_gate") or {}).get("estado"),
+                "condiciones": (d.get("quality_gate") or {}).get("condiciones", []),
+                "cobertura": (d.get("medidas") or {}).get("coverage"),
+                "cobertura_codigo_nuevo": (d.get("medidas") or {}).get("new_coverage"),
+                "panel": d.get("panel")}
+    return None
+
+
+def leer_pruebas(reports: str):
+    """Resultados de pruebas a partir de los TEST-*.xml de Surefire/Failsafe (formato JUnit)."""
+    import xml.etree.ElementTree as ET
+    archivos = sorted(Path(reports).rglob("TEST-*.xml"))
+    if not archivos:
+        return None
+    t = {"total": 0, "fallidas": 0, "errores": 0, "omitidas": 0, "detalle": []}
+    for ruta in archivos:
+        try:
+            raiz = ET.parse(ruta).getroot()
+        except (ET.ParseError, OSError):
+            continue
+        suites = [raiz] if raiz.tag == "testsuite" else raiz.findall("testsuite")
+        for su in suites:
+            t["total"] += int(su.get("tests", 0))
+            t["fallidas"] += int(su.get("failures", 0))
+            t["errores"] += int(su.get("errors", 0))
+            t["omitidas"] += int(su.get("skipped", 0))
+            for caso in su.findall("testcase"):
+                if caso.find("failure") is not None or caso.find("error") is not None:
+                    t["detalle"].append(f"{(caso.get('classname') or '').split('.')[-1]}.{caso.get('name')}")
+    return t
+
+
+def leer_cobertura(reports: str):
+    """Cobertura de líneas a partir de los jacoco*.xml (suma de todos los módulos)."""
+    import xml.etree.ElementTree as ET
+    cubiertas = perdidas = 0
+    archivos = sorted(Path(reports).rglob("jacoco*.xml"))
+    for ruta in archivos:
+        try:
+            raiz = ET.parse(ruta).getroot()
+        except (ET.ParseError, OSError):
+            continue
+        for c in raiz.findall("counter"):
+            if c.get("type") == "LINE":
+                cubiertas += int(c.get("covered", 0))
+                perdidas += int(c.get("missed", 0))
+    total = cubiertas + perdidas
+    if not archivos:
+        return None
+    return {"lineas_cubiertas": cubiertas, "lineas_totales": total,
+            "porcentaje": round(100 * cubiertas / total, 1) if total else 0.0,
+            "archivos": [r.name for r in archivos]}
+
+
 # --------------------------------------------------------------------------- #
 # Supresiones justificadas (.devsecops/suppressions.yml)
 # --------------------------------------------------------------------------- #
@@ -353,7 +460,7 @@ def overhead_desde_jobs(ruta: str | None):
 # --------------------------------------------------------------------------- #
 # Resumen legible (GITHUB_STEP_SUMMARY)
 # --------------------------------------------------------------------------- #
-def resumen_md(hallazgos, umbral, bloqueantes, metricas, avisos, alcance) -> str:
+def resumen_md(hallazgos, umbral, bloqueantes, metricas, avisos, alcance, salida=None) -> str:
     def conteo(filtro):
         c = {s: 0 for s in reversed(SEVERIDADES)}
         for h in hallazgos:
@@ -362,7 +469,8 @@ def resumen_md(hallazgos, umbral, bloqueantes, metricas, avisos, alcance) -> str
         return c
 
     cats = sorted({h["categoria"] for h in hallazgos})
-    estado = "❌ BLOQUEADO" if bloqueantes else "✅ APROBADO"
+    motivos = ((salida or {}).get("gate") or {}).get("motivos") or []
+    estado = "❌ BLOQUEADO" if (bloqueantes or motivos) else "✅ APROBADO"
     md = [f"## Gate de seguridad ({alcance}) — {estado}",
           f"Umbral: bloquea severidad **{umbral}** o superior · "
           f"Hallazgos abiertos: **{sum(1 for h in hallazgos if h['estado']=='abierto')}** · "
@@ -373,6 +481,23 @@ def resumen_md(hallazgos, umbral, bloqueantes, metricas, avisos, alcance) -> str
         for c in cats:
             n = conteo(lambda h, c=c: h["categoria"] == c and h["estado"] == "abierto")
             md.append(f"| {c} | " + " | ".join(str(n[s]) for s in reversed(SEVERIDADES)) + " |")
+        md.append("")
+    cal = (salida or {}).get("calidad")
+    if cal:
+        cob, son, pr = cal.get("cobertura"), cal.get("sonar"), cal.get("pruebas")
+        md += ["### Calidad (QA)"]
+        if pr:
+            md.append(f"- Pruebas: **{pr['total'] - pr['fallidas'] - pr['errores'] - pr['omitidas']} OK** de {pr['total']}"
+                      f" · fallidas {pr['fallidas'] + pr['errores']} · omitidas {pr['omitidas']}")
+        md.append(f"- Cobertura de líneas (JaCoCo): **{cob['porcentaje']:g} %** "
+                  f"({cob['lineas_cubiertas']}/{cob['lineas_totales']})" if cob else "- Cobertura de líneas: sin reporte")
+        if cal.get("cobertura_minima"):
+            md.append(f"- Mínimo exigido: {cal['cobertura_minima']:g} %")
+        if son:
+            md.append(f"- SonarQube: quality gate **{son.get('quality_gate')}** ({cal.get('sonar_gate')}) · "
+                      f"cobertura código nuevo {son.get('cobertura_codigo_nuevo') if son.get('cobertura_codigo_nuevo') is not None else '-'} % · {son.get('panel')}")
+        for m in motivos:
+            md.append(f"- ❌ {m}")
         md.append("")
     if bloqueantes:
         md += ["### Hallazgos que bloquean", "| Sev. | Herramienta | Regla | Ubicación | id |", "|---|---|---|---|---|"]
@@ -444,6 +569,35 @@ def reporte_html(salida, metricas, avisos) -> str:
                f"<b>Gate: {'✅ APROBADO' if ok else '❌ BLOQUEADO'}</b> · bloquea severidad <b>{e(gate['umbral'])}</b> o superior · "
                f"abiertos <b>{len(abiertos)}</b> · bloqueantes <b>{gate['bloqueantes']}</b> · suprimidos <b>{len(suprimidos)}</b>"
                "</td></tr></table>")
+    for m in gate.get("motivos") or []:
+        out.append(f'<p><font color="#C00000"><b>❌ {e(m)}</b></font></p>')
+
+    cal = salida.get("calidad")
+    if cal:
+        cob, son, pr = cal.get("cobertura"), cal.get("sonar"), cal.get("pruebas")
+        out.append(f"<h2>Calidad (QA)</h2><table {tabla}>")
+        if pr:
+            ok_pr = pr["total"] - pr["fallidas"] - pr["errores"] - pr["omitidas"]
+            out.append(f"<tr><th>Pruebas</th><td><b>{ok_pr} correctas</b> de {pr['total']} · fallidas "
+                       f"{pr['fallidas'] + pr['errores']} · omitidas {pr['omitidas']}</td></tr>")
+        out.append("<tr><th>Cobertura de líneas (JaCoCo)</th><td>"
+                   + (f"<b>{cob['porcentaje']:g} %</b> ({cob['lineas_cubiertas']} de {cob['lineas_totales']} líneas)"
+                      if cob else "sin reporte") + "</td></tr>")
+        minimo = f"{cal['cobertura_minima']:g} %" if cal.get("cobertura_minima") else "no se exige"
+        out.append(f"<tr><th>Mínimo exigido</th><td>{e(minimo)}</td></tr>")
+        if son:
+            panel = son.get("panel") or ""
+            out.append(f"<tr><th>SonarQube · quality gate</th><td><b>{e(str(son.get('quality_gate')))}</b> "
+                       f"({e(cal.get('sonar_gate') or '')}) · <a href=\"{e(panel)}\">ver panel</a></td></tr>")
+            pct = lambda v: f"{v:g} %" if isinstance(v, (int, float)) else "- (sin código nuevo)"
+            out.append(f"<tr><th>SonarQube · cobertura (global / código nuevo)</th><td>{e(pct(son.get('cobertura')))} / "
+                       f"{e(pct(son.get('cobertura_codigo_nuevo')))}</td></tr>")
+            fallidas = [c for c in son.get("condiciones") or [] if c.get("status") == "ERROR"]
+            if fallidas:
+                out.append("<tr><th>Condiciones no cumplidas</th><td>" + "<br>".join(
+                    e(f"{c.get('metricKey')}: {c.get('actualValue')} (umbral {c.get('comparator')} {c.get('errorThreshold')})")
+                    for c in fallidas) + "</td></tr>")
+        out.append("</table>")
 
     cats = sorted({h["categoria"] for h in hs})
     if cats:
@@ -553,6 +707,10 @@ def main() -> int:
     ap.add_argument("--metrics-out", default="metricas.json")
     ap.add_argument("--summary", default=os.environ.get("GITHUB_STEP_SUMMARY"))
     ap.add_argument("--html", help="Ruta del reporte HTML legible (opcional)")
+    ap.add_argument("--min-coverage", type=float, default=0.0,
+                    help="Cobertura de líneas mínima (%%) según jacoco*.xml; 0 = no se exige")
+    ap.add_argument("--sonar-gate", choices=("informar", "bloquear"), default="informar",
+                    help="Si el quality gate de Sonar en ERROR bloquea el gate")
     ap.add_argument("--enforce", action="store_true", help="Salir con 1 si el gate bloquea")
     a = ap.parse_args()
 
@@ -567,7 +725,7 @@ def main() -> int:
         meta = FUENTES.get(ruta.name)
         if not meta or not ruta.is_file() or meta[2] not in etapas:
             continue
-        lector = leer_zap if ruta.suffix == ".json" else leer_sarif
+        lector = leer_sonar if ruta.name == "sonar.json" else (leer_zap if ruta.suffix == ".json" else leer_sarif)
         try:
             nuevos = lector(ruta, *meta)
         except (json.JSONDecodeError, OSError) as e:
@@ -614,11 +772,34 @@ def main() -> int:
         if h["bloquea"]:
             bloqueantes.append(h)
 
+    # Calidad (QA): cobertura mínima y quality gate de Sonar. Solo en integración y global.
+    motivos, calidad = [], None
+    if a.scope in ("ci", "all"):
+        cobertura = leer_cobertura(a.reports)
+        sonar = leer_sonar_resumen(a.reports)
+        pruebas = leer_pruebas(a.reports)
+        calidad = {"pruebas": pruebas, "cobertura": cobertura, "cobertura_minima": a.min_coverage or None,
+                   "sonar": sonar, "sonar_gate": a.sonar_gate}
+        if pruebas and (pruebas["fallidas"] or pruebas["errores"]):
+            motivos.append(f"{pruebas['fallidas'] + pruebas['errores']} prueba(s) fallida(s) de {pruebas['total']}: "
+                           + ", ".join(pruebas["detalle"][:5]))
+        if a.min_coverage > 0:
+            if cobertura is None:
+                motivos.append(f"No hay reporte de cobertura (jacoco.xml) y se exige {a.min_coverage:g} %")
+            elif cobertura["porcentaje"] < a.min_coverage:
+                motivos.append(f"Cobertura {cobertura['porcentaje']:g} % por debajo del mínimo {a.min_coverage:g} %")
+        if sonar and sonar.get("quality_gate") == "ERROR":
+            if a.sonar_gate == "bloquear":
+                motivos.append("Quality gate de SonarQube en ERROR")
+            else:
+                avisos.append("Quality gate de SonarQube en ERROR (informativo; ver el panel de Sonar)")
+
     salida = {
         **ctx,
         "alcance": a.scope,
-        "gate": {"umbral": umbral, "resultado": "bloqueado" if bloqueantes else "aprobado",
-                 "bloqueantes": len(bloqueantes)},
+        "gate": {"umbral": umbral, "resultado": "bloqueado" if (bloqueantes or motivos) else "aprobado",
+                 "bloqueantes": len(bloqueantes), "motivos": motivos},
+        "calidad": calidad,
         "fuentes": fuentes_leidas,
         "hallazgos": [{**{k: ctx[k] for k in ("repo", "grupo", "sprint", "commit", "fecha_commit",
                                                "fecha_deteccion", "run_id")}, **h} for h in hallazgos],
@@ -647,11 +828,15 @@ def main() -> int:
         "densidad_vulnerabilidades": round(len(abiertos) / kloc, 3) if kloc else None,
         "tiempo_deteccion_min": t_det,
         "overhead": overhead_desde_jobs(a.jobs_json),
+        "pruebas": {k: v for k, v in ((calidad or {}).get("pruebas") or {}).items() if k != "detalle"} or None,
+        "cobertura": ((calidad or {}).get("cobertura") or {}).get("porcentaje"),
+        "cobertura_minima": (calidad or {}).get("cobertura_minima"),
+        "sonar_quality_gate": ((calidad or {}).get("sonar") or {}).get("quality_gate"),
         "gate": salida["gate"],
     }
     Path(a.metrics_out).write_text(json.dumps(metricas, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    md = resumen_md(hallazgos, umbral, bloqueantes, metricas, avisos, a.scope)
+    md = resumen_md(hallazgos, umbral, bloqueantes, metricas, avisos, a.scope, salida)
     if a.html:
         Path(a.html).write_text(reporte_html(salida, metricas, avisos), encoding="utf-8")
     if a.summary:
@@ -665,7 +850,9 @@ def main() -> int:
         anotar_dast(hallazgos)
     if bloqueantes:
         print(f"::error::Gate de seguridad bloqueado: {len(bloqueantes)} hallazgo(s) >= {umbral}")
-    return 1 if (bloqueantes and a.enforce) else 0
+    for m in motivos:
+        print(f"::error::Gate de calidad bloqueado: {escapar_msg(m)}")
+    return 1 if ((bloqueantes or motivos) and a.enforce) else 0
 
 
 if __name__ == "__main__":

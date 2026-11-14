@@ -10,3 +10,4 @@ matrix-auth
 timestamper
 ws-cleanup
 pipeline-utility-steps
+junit
