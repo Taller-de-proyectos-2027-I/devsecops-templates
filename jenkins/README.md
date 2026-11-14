@@ -64,10 +64,10 @@ devsecopsPipeline(grupo: 'g01', coberturaMinima: 60)   // sonarGate: 'bloquear' 
 
 ### Configurar SonarQube Cloud (una vez por organización)
 1. Entrar a https://sonarcloud.io con la cuenta de GitHub → *Create organization* → importar la organización `Taller-de-proyectos-2027-I` (plan **Free**, repos públicos).
-2. Importar cada repositorio de grupo (*Analyze new project*). La clave del proyecto queda como `<organización>_<repo>`.
+2. Importar cada repositorio de grupo (*Analyze new project*). Sonar asigna la clave `<organización de GitHub>_<repo>` (por ejemplo `Taller-de-proyectos-2027-I_g00-prueba`), que es la que usa el pipeline; si fuera otra, se indica con `sonarProjectKey`.
 3. En cada proyecto: *Administration → Analysis Method* → **desactivar Automatic Analysis** (el análisis lo hace Jenkins).
 4. *My Account → Security* → generar un token.
-5. En el `.env` de Jenkins: `SONAR_ORG=<clave de la organización en Sonar>` y `SONAR_TOKEN=<token>`. Luego `docker compose up -d --build`.
+5. En el `.env` de Jenkins: `SONAR_ORG=<clave de la organización en Sonar>` (la parte de la URL después de `/organizations/`) y `SONAR_TOKEN=<token>`. Luego `docker compose up -d --build`.
 
 Sin `SONAR_ORG`, el pipeline sigue funcionando con Semgrep y SpotBugs.
 

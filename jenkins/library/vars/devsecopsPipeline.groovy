@@ -27,7 +27,7 @@ def call(Map cfg = [:]) {
         // Calidad (fase 2). El umbral de cobertura lo define el QA líder del grupo.
         coberturaMinima : 60,              // % de líneas (JaCoCo); 0 = no se exige
         sonar           : (env.SONAR_ORG ?: '') != '',   // activo si el .env de Jenkins tiene SONAR_ORG
-        sonarProjectKey : '',              // vacío = <SONAR_ORG>_<repositorio>
+        sonarProjectKey : '',              // vacío = <organización GitHub>_<repositorio>
         sonarGate       : 'informar',      // informar | bloquear (quality gate de Sonar en ERROR)
     ] + cfg
     // Sonar cubre el SAST: Semgrep y SpotBugs quedan solo si Sonar no está activo (o si se piden)
@@ -123,7 +123,7 @@ def call(Map cfg = [:]) {
                             withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
                                 sh '''
                                     REPO="${JOB_NAME%%/*}"
-                                    KEY="${SONAR_KEY:-${SONAR_ORG}_${REPO}}"
+                                    KEY="${SONAR_KEY:-${GITHUB_ORG}_${REPO}}"   # clave que Sonar asigna al importar desde GitHub
                                     if [ -n "$CHANGE_ID" ]; then
                                       ALC="-Dsonar.pullrequest.key=$CHANGE_ID -Dsonar.pullrequest.branch=$CHANGE_BRANCH -Dsonar.pullrequest.base=$CHANGE_TARGET"
                                     else

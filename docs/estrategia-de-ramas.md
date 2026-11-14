@@ -14,7 +14,7 @@ main ──●────────●────────●────
 | `main` protegida | Nadie hace push directo. Solo entra por PR aprobado y con el check de Jenkins en verde. |
 | Ramas cortas | Una rama por historia de usuario o corrección, viva pocos días: `HU-<n>-descripcion` o `fix-<n>-descripcion` (n = número del ítem en GitHub Projects). |
 | PR hacia `main` | Jenkins ejecuta pruebas, cobertura, SonarQube y los escáneres de seguridad. Si el gate bloquea, no se fusiona. |
-| Revisión | Al menos 1 aprobación. Cambios en `.devsecops/` o en el `Jenkinsfile` requieren al rol de Ciberseguridad o DevSecOps. |
+| Revisión | Al menos 1 aprobación. Cambios en `.devsecops/` o en el `Jenkinsfile` deben revisarlos Ciberseguridad o DevSecOps (se configurará con CODEOWNERS). |
 | Entrega de sprint | Tag sobre `main`: `v0.<sprint>.0` (correcciones dentro del sprint: `v0.<sprint>.1`). |
 | Liberación | Después de fusionar, el build de `main` construye la imagen, la prueba con ZAP y espera la aprobación de liberación. |
 
